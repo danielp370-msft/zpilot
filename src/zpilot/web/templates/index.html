@@ -7,7 +7,7 @@
     <style>
         :root {
             --bg: #0d1117;
-            --card-bg: #161b22;
+            --panel-bg: #161b22;
             --border: #30363d;
             --text: #e6edf3;
             --text-dim: #8b949e;
@@ -16,445 +16,682 @@
             --yellow: #d29922;
             --red: #f85149;
             --orange: #db6d28;
+            --term-bg: #010409;
         }
         * { box-sizing: border-box; margin: 0; padding: 0; }
+        html, body { height: 100%; overflow: hidden; }
         body {
             font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', monospace;
             background: var(--bg);
             color: var(--text);
-            padding: 20px;
-            min-height: 100vh;
-        }
-        header {
             display: flex;
-            justify-content: space-between;
+            flex-direction: column;
+        }
+
+        /* ── Top bar ─────────────────────────────── */
+        .topbar {
+            display: flex;
             align-items: center;
-            margin-bottom: 24px;
-            padding-bottom: 16px;
+            justify-content: space-between;
+            padding: 6px 12px;
+            background: var(--panel-bg);
             border-bottom: 1px solid var(--border);
+            flex-shrink: 0;
+            height: 36px;
         }
-        header h1 {
-            font-size: 1.5rem;
-            color: var(--accent);
+        .topbar-left { display: flex; align-items: center; gap: 12px; }
+        .topbar h1 { font-size: 0.9rem; color: var(--accent); white-space: nowrap; }
+        .topbar h1 span { color: var(--text-dim); font-weight: normal; }
+        .topbar-right { display: flex; align-items: center; gap: 12px; font-size: 0.75rem; color: var(--text-dim); }
+        .live-dot {
+            display: inline-block; width: 6px; height: 6px;
+            background: var(--green); border-radius: 50%;
+            animation: pulse 2s infinite;
         }
-        header h1 span { color: var(--text-dim); font-weight: normal; }
-        .status-bar {
+        @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.4} }
+
+        /* Layout buttons */
+        .layout-btns { display: flex; gap: 2px; }
+        .layout-btns button {
+            background: var(--bg); border: 1px solid var(--border); color: var(--text-dim);
+            padding: 2px 8px; font-size: 0.7rem; cursor: pointer; font-family: inherit;
+        }
+        .layout-btns button:hover, .layout-btns button.active { background: var(--accent); color: #000; border-color: var(--accent); }
+        .layout-btns button:first-child { border-radius: 4px 0 0 4px; }
+        .layout-btns button:last-child { border-radius: 0 4px 4px 0; }
+
+        /* ── Main layout: sidebar + panels ────────── */
+        .main { display: flex; flex: 1; overflow: hidden; }
+
+        /* Sidebar */
+        .sidebar {
+            width: 220px;
+            min-width: 180px;
+            background: var(--panel-bg);
+            border-right: 1px solid var(--border);
             display: flex;
-            gap: 16px;
-            font-size: 0.85rem;
+            flex-direction: column;
+            flex-shrink: 0;
+            overflow: hidden;
+        }
+        .sidebar-header {
+            padding: 8px 10px;
+            font-size: 0.75rem;
             color: var(--text-dim);
-        }
-        .status-bar .live { color: var(--green); }
-
-        /* Session Grid */
-        .sessions {
-            display: grid;
-            grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
-            gap: 16px;
-            margin-bottom: 24px;
-        }
-        .session-card {
-            background: var(--card-bg);
-            border: 1px solid var(--border);
-            border-radius: 8px;
-            padding: 16px;
-            transition: border-color 0.3s;
-            cursor: pointer;
-        }
-        .session-card:hover { border-color: var(--accent); }
-        .session-card.state-waiting { border-left: 3px solid var(--orange); }
-        .session-card.state-active { border-left: 3px solid var(--yellow); }
-        .session-card.state-idle { border-left: 3px solid var(--green); }
-        .session-card.state-error { border-left: 3px solid var(--red); }
-        .session-card.state-unknown { border-left: 3px solid var(--text-dim); }
-
-        .card-header {
+            border-bottom: 1px solid var(--border);
             display: flex;
             justify-content: space-between;
             align-items: center;
-            margin-bottom: 8px;
         }
-        .card-header h3 { font-size: 1rem; }
-        .state-badge {
-            font-size: 0.75rem;
-            padding: 2px 8px;
-            border-radius: 12px;
-            text-transform: uppercase;
-            font-weight: bold;
+        .sidebar-header button {
+            background: none; border: 1px solid var(--border); color: var(--accent);
+            padding: 1px 6px; border-radius: 3px; cursor: pointer; font-size: 0.7rem; font-family: inherit;
         }
-        .state-badge.waiting { background: var(--orange); color: #000; }
-        .state-badge.active { background: var(--yellow); color: #000; }
-        .state-badge.idle { background: var(--green); color: #000; }
-        .state-badge.error { background: var(--red); color: #fff; }
-        .state-badge.unknown { background: var(--text-dim); color: #000; }
+        .sidebar-header button:hover { background: var(--accent); color: #000; }
 
-        .card-meta {
-            font-size: 0.8rem;
-            color: var(--text-dim);
-            margin-bottom: 8px;
-        }
-        .card-preview {
-            background: var(--bg);
-            border-radius: 4px;
-            padding: 8px;
-            font-size: 0.75rem;
-            max-height: 60px;
-            overflow: hidden;
-            color: var(--text-dim);
-            white-space: pre;
-            line-height: 1.4;
-        }
-        .card-actions {
-            margin-top: 12px;
-            display: flex;
-            gap: 8px;
-        }
-        .card-actions button {
-            font-family: inherit;
-            font-size: 0.75rem;
-            padding: 4px 12px;
-            border-radius: 4px;
-            border: 1px solid var(--border);
-            background: var(--card-bg);
-            color: var(--text);
-            cursor: pointer;
-        }
-        .card-actions button:hover { border-color: var(--accent); }
-        .card-actions button.danger:hover { border-color: var(--red); color: var(--red); }
-
-        /* Events Log */
-        .events-section {
-            background: var(--card-bg);
-            border: 1px solid var(--border);
-            border-radius: 8px;
-            padding: 16px;
-            margin-bottom: 24px;
-        }
-        .events-section h2 {
-            font-size: 1rem;
-            margin-bottom: 12px;
-            color: var(--text-dim);
-        }
-        .event-list {
-            max-height: 250px;
+        .session-list {
+            flex: 1;
             overflow-y: auto;
-            font-size: 0.8rem;
         }
-        .event-row {
+        .session-item {
+            padding: 8px 10px;
+            border-bottom: 1px solid rgba(48,54,61,0.5);
+            cursor: pointer;
             display: flex;
-            gap: 12px;
-            padding: 4px 0;
-            border-bottom: 1px solid rgba(48, 54, 61, 0.5);
+            flex-direction: column;
+            gap: 3px;
+            transition: background 0.15s;
+            border-left: 3px solid transparent;
         }
-        .event-row .ts { color: var(--text-dim); min-width: 70px; }
-        .event-row .session { color: var(--accent); min-width: 120px; }
-        .event-row .change { color: var(--text); }
+        .session-item:hover { background: rgba(88,166,255,0.08); }
+        .session-item.docked { background: rgba(88,166,255,0.12); border-left-color: var(--accent); }
+        .session-item .si-top { display: flex; justify-content: space-between; align-items: center; }
+        .session-item .si-name { font-size: 0.8rem; font-weight: 600; }
+        .session-item .si-state {
+            font-size: 0.65rem; padding: 1px 6px; border-radius: 8px;
+            text-transform: uppercase; font-weight: bold;
+        }
+        .si-state.waiting { background: var(--orange); color: #000; }
+        .si-state.active { background: var(--yellow); color: #000; }
+        .si-state.idle { background: var(--green); color: #000; }
+        .si-state.error { background: var(--red); color: #fff; }
+        .si-state.unknown { background: var(--text-dim); color: #000; }
+        .session-item .si-preview {
+            font-size: 0.65rem; color: var(--text-dim);
+            white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+        }
+        .session-item .si-meta { font-size: 0.6rem; color: var(--text-dim); }
 
-        /* Pane Viewer Modal */
-        .modal-overlay {
-            display: none;
-            position: fixed;
-            top: 0; left: 0; right: 0; bottom: 0;
-            background: rgba(0,0,0,0.7);
-            z-index: 100;
-            justify-content: center;
-            align-items: center;
-        }
-        .modal-overlay.active { display: flex; }
-        .modal {
-            background: var(--card-bg);
-            border: 1px solid var(--border);
-            border-radius: 8px;
-            width: 80%;
-            max-width: 900px;
-            max-height: 80vh;
+        /* Event log (collapsible at bottom of sidebar) */
+        .event-panel {
+            border-top: 1px solid var(--border);
+            max-height: 200px;
             overflow: hidden;
             display: flex;
             flex-direction: column;
         }
-        .modal-header {
-            padding: 12px 16px;
+        .event-panel-header {
+            padding: 6px 10px;
+            font-size: 0.7rem;
+            color: var(--text-dim);
+            cursor: pointer;
+            display: flex;
+            justify-content: space-between;
+        }
+        .event-panel-header:hover { color: var(--text); }
+        .event-panel-list {
+            overflow-y: auto;
+            font-size: 0.65rem;
+            flex: 1;
+        }
+        .event-panel-list.collapsed { display: none; }
+        .ev-row { padding: 3px 10px; border-bottom: 1px solid rgba(48,54,61,0.3); display: flex; gap: 6px; }
+        .ev-row .ev-ts { color: var(--text-dim); min-width: 55px; }
+        .ev-row .ev-session { color: var(--accent); }
+
+        /* ── Panel area ──────────────────────────── */
+        .panel-area {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+
+        /* Tab bar for docked sessions */
+        .tab-bar {
+            display: flex;
+            background: var(--panel-bg);
             border-bottom: 1px solid var(--border);
+            flex-shrink: 0;
+            overflow-x: auto;
+            min-height: 30px;
+        }
+        .tab {
+            padding: 5px 14px;
+            font-size: 0.75rem;
+            cursor: pointer;
+            border-right: 1px solid var(--border);
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            white-space: nowrap;
+            color: var(--text-dim);
+            transition: background 0.15s;
+        }
+        .tab:hover { background: rgba(88,166,255,0.08); }
+        .tab.active { background: var(--bg); color: var(--text); border-bottom: 2px solid var(--accent); }
+        .tab .tab-close {
+            font-size: 0.65rem; opacity: 0.5; cursor: pointer;
+            padding: 0 2px;
+        }
+        .tab .tab-close:hover { opacity: 1; color: var(--red); }
+        .tab .tab-dot {
+            width: 6px; height: 6px; border-radius: 50%; display: inline-block;
+        }
+        .tab .tab-dot.waiting { background: var(--orange); }
+        .tab .tab-dot.active { background: var(--yellow); }
+        .tab .tab-dot.idle { background: var(--green); }
+        .tab .tab-dot.error { background: var(--red); }
+
+        /* Terminal panels — grid of docked terminals */
+        .panels-container {
+            flex: 1;
+            display: grid;
+            overflow: hidden;
+        }
+        .panels-container.layout-1 { grid-template-columns: 1fr; grid-template-rows: 1fr; }
+        .panels-container.layout-2h { grid-template-columns: 1fr 1fr; grid-template-rows: 1fr; }
+        .panels-container.layout-2v { grid-template-columns: 1fr; grid-template-rows: 1fr 1fr; }
+        .panels-container.layout-4 { grid-template-columns: 1fr 1fr; grid-template-rows: 1fr 1fr; }
+
+        .term-panel {
+            display: flex;
+            flex-direction: column;
+            border: 1px solid var(--border);
+            overflow: hidden;
+            min-height: 0;
+        }
+        .term-panel.focused { border-color: var(--accent); }
+        .term-header {
             display: flex;
             justify-content: space-between;
             align-items: center;
+            padding: 3px 8px;
+            background: var(--panel-bg);
+            border-bottom: 1px solid var(--border);
+            font-size: 0.7rem;
+            flex-shrink: 0;
         }
-        .modal-header h3 { font-size: 1rem; }
-        .modal-close {
-            background: none; border: none; color: var(--text-dim);
-            font-size: 1.5rem; cursor: pointer;
-        }
-        .terminal-view {
-            background: #000;
-            color: #0f0;
-            padding: 12px;
-            font-size: 0.8rem;
-            line-height: 1.5;
+        .term-header .th-name { font-weight: 600; }
+        .term-header .th-state { color: var(--text-dim); }
+        .term-header .th-close { cursor: pointer; color: var(--text-dim); padding: 0 4px; }
+        .term-header .th-close:hover { color: var(--red); }
+        .term-body {
+            background: var(--term-bg);
+            color: #c8d3de;
+            padding: 6px 8px;
+            font-size: 0.75rem;
+            line-height: 1.45;
             overflow-y: auto;
             flex: 1;
-            white-space: pre;
-            min-height: 300px;
+            white-space: pre-wrap;
+            word-break: break-all;
+            min-height: 0;
+            cursor: text;
+            outline: none;
         }
-        .modal-input {
+        .term-body:focus { box-shadow: inset 0 0 0 1px var(--accent); }
+        .term-body .inline-input {
+            color: var(--green);
+            border-right: 2px solid var(--green);
+            animation: blink 1s step-end infinite;
+            padding-right: 1px;
+        }
+        @keyframes blink { 50% { border-color: transparent; } }
+        .term-input {
             display: flex;
             border-top: 1px solid var(--border);
+            flex-shrink: 0;
         }
-        .modal-input input {
+        .term-input input {
             flex: 1;
             background: var(--bg);
             border: none;
             color: var(--text);
-            padding: 10px;
+            padding: 5px 8px;
             font-family: inherit;
-            font-size: 0.85rem;
+            font-size: 0.75rem;
+            outline: none;
         }
-        .modal-input button {
-            padding: 10px 20px;
+        .term-input button {
+            padding: 5px 10px;
             background: var(--accent);
             border: none;
             color: #000;
             font-family: inherit;
+            font-size: 0.7rem;
             cursor: pointer;
         }
 
-        .empty-state {
-            text-align: center;
-            padding: 60px;
+        /* Empty panel placeholder */
+        .panel-empty {
+            display: flex;
+            align-items: center;
+            justify-content: center;
             color: var(--text-dim);
+            font-size: 0.85rem;
+            height: 100%;
         }
-        .empty-state .icon { font-size: 3rem; margin-bottom: 12px; }
-
-        @keyframes pulse {
-            0%, 100% { opacity: 1; }
-            50% { opacity: 0.5; }
-        }
-        .live-dot {
-            display: inline-block;
-            width: 8px; height: 8px;
-            background: var(--green);
-            border-radius: 50%;
-            animation: pulse 2s infinite;
-        }
+        .panel-empty .hint { font-size: 0.7rem; margin-top: 6px; opacity: 0.6; }
     </style>
 </head>
 <body>
-    <header>
-        <h1>⚡ zpilot <span>— Mission Control</span></h1>
-        <div class="status-bar">
-            <span class="live"><span class="live-dot"></span> Live</span>
+    <!-- Top bar -->
+    <div class="topbar">
+        <div class="topbar-left">
+            <h1>⚡ zpilot <span>— Mission Control</span></h1>
+            <div class="layout-btns">
+                <button onclick="setLayout('1')" title="Single pane">▣</button>
+                <button onclick="setLayout('2h')" class="active" title="Side by side">◫</button>
+                <button onclick="setLayout('2v')" title="Stacked">⬒</button>
+                <button onclick="setLayout('4')" title="2×2 grid">⊞</button>
+            </div>
+        </div>
+        <div class="topbar-right">
+            <span><span class="live-dot"></span> Live</span>
             <span id="session-count">{{ sessions|length }} sessions</span>
-            <span id="last-update">—</span>
-        </div>
-    </header>
-
-    <div class="sessions" id="sessions-grid">
-        {% if sessions %}
-            {% for s in sessions %}
-            <div class="session-card state-{{ s.state }}" data-session="{{ s.name }}" onclick="viewPane('{{ s.name }}')">
-                <div class="card-header">
-                    <h3>{{ s.name }}</h3>
-                    <span class="state-badge {{ s.state }}">
-                        {% if s.state == 'waiting' %}🔔{% elif s.state == 'active' %}⏳{% elif s.state == 'idle' %}✅{% elif s.state == 'error' %}❌{% else %}❓{% endif %}
-                        {{ s.state }}
-                    </span>
-                </div>
-                <div class="card-meta">
-                    idle: {{ s.idle_seconds }}s
-                    {% if s.is_current %} · current{% endif %}
-                </div>
-                <div class="card-preview">{{ s.last_line }}</div>
-                <div class="card-actions">
-                    <button onclick="event.stopPropagation(); viewPane('{{ s.name }}')">👁 View</button>
-                    <button class="danger" onclick="event.stopPropagation(); deleteSession('{{ s.name }}')">✕ Remove</button>
-                </div>
-            </div>
-            {% endfor %}
-        {% else %}
-            <div class="empty-state">
-                <div class="icon">🚀</div>
-                <p>No Zellij sessions running</p>
-                <p style="font-size: 0.8rem; margin-top: 8px;">Create one with: <code>zpilot new my-session</code></p>
-            </div>
-        {% endif %}
-    </div>
-
-    <div class="events-section">
-        <h2>📋 Events</h2>
-        <div class="event-list" id="event-list">
-            {% for ev in events %}
-            <div class="event-row">
-                <span class="ts ts-epoch" data-ts="{{ ev.ts }}">{{ ev.ts | int | string }}</span>
-                <span class="session">{{ ev.session }}{% if ev.pane %}:{{ ev.pane }}{% endif %}</span>
-                <span class="change">{{ ev.old_state or '?' }} → {{ ev.new_state }} {{ ev.details or '' }}</span>
-            </div>
-            {% endfor %}
-            {% if not events %}
-            <div style="color: var(--text-dim); padding: 12px;">No events yet</div>
-            {% endif %}
+            <span id="last-update"></span>
         </div>
     </div>
 
-    <!-- Pane Viewer Modal -->
-    <div class="modal-overlay" id="pane-modal">
-        <div class="modal">
-            <div class="modal-header">
-                <h3 id="modal-title">Session</h3>
-                <button class="modal-close" onclick="closeModal()">&times;</button>
+    <div class="main">
+        <!-- Sidebar: session list + events -->
+        <div class="sidebar">
+            <div class="sidebar-header">
+                <span>SESSIONS</span>
+                <button onclick="createSession()" title="New session">+ New</button>
             </div>
-            <div class="terminal-view" id="terminal-content">Loading...</div>
-            <div class="modal-input">
-                <input type="text" id="send-input" placeholder="Type command and press Enter..." onkeydown="if(event.key==='Enter') sendCommand()">
-                <button onclick="sendCommand()">Send ▶</button>
+            <div class="session-list" id="session-list">
+                {% for s in sessions %}
+                <div class="session-item" data-session="{{ s.name }}" onclick="dockSession('{{ s.name }}')">
+                    <div class="si-top">
+                        <span class="si-name">{{ s.name }}</span>
+                        <span class="si-state {{ s.state }}">{{ s.state }}</span>
+                    </div>
+                    <div class="si-preview">{{ s.last_line }}</div>
+                    <div class="si-meta">idle {{ s.idle_seconds }}s</div>
+                </div>
+                {% endfor %}
+            </div>
+            <div class="event-panel">
+                <div class="event-panel-header" onclick="toggleEvents()">
+                    <span>📋 EVENTS</span>
+                    <span id="ev-toggle">▼</span>
+                </div>
+                <div class="event-panel-list" id="event-list">
+                    {% for ev in events %}
+                    <div class="ev-row">
+                        <span class="ev-ts ts-epoch" data-ts="{{ ev.ts }}">{{ ev.ts | int }}</span>
+                        <span class="ev-session">{{ ev.session }}</span>
+                        <span>{{ ev.old_state or '?' }}→{{ ev.new_state }}</span>
+                    </div>
+                    {% endfor %}
+                </div>
+            </div>
+        </div>
+
+        <!-- Panel area: tabs + terminal grid -->
+        <div class="panel-area">
+            <div class="tab-bar" id="tab-bar"></div>
+            <div class="panels-container layout-2h" id="panels-container">
+                <div class="panel-empty" id="empty-hint">
+                    <div style="text-align:center">
+                        <div style="font-size:2rem;margin-bottom:8px">👈</div>
+                        <div>Click a session to dock it here</div>
+                        <div class="hint">Or double-click for full-screen view</div>
+                    </div>
+                </div>
             </div>
         </div>
     </div>
 
     <script>
-        let currentSession = null;
-        let refreshInterval = null;
+        // ── State ──────────────────────────────────
+        let dockedSessions = [];       // ordered list of docked session names
+        let activeTab = null;           // name of focused tab
+        let currentLayout = '2h';       // 1, 2h, 2v, 4
+        let panelRefreshTimers = {};    // session -> interval id
+        let sessionsData = {};          // session name -> latest data from SSE
+        let inlineBuffers = {};         // session -> current inline typing buffer
 
-        // Convert epoch timestamps rendered by server to local time
-        document.querySelectorAll('.ts-epoch').forEach(el => {
-            const ts = parseFloat(el.dataset.ts);
-            if (ts) el.textContent = new Date(ts * 1000).toLocaleTimeString();
-        });
+        const maxPanels = { '1': 1, '2h': 2, '2v': 2, '4': 4 };
 
-        // Defer SSE so it doesn't block page load (Playwright-friendly)
-        let evtSource = null;
+        // ── SSE ────────────────────────────────────
         function connectSSE() {
-            evtSource = new EventSource('/api/stream');
-            evtSource.onmessage = (e) => {
-                const ev = JSON.parse(e.data);
-                addEvent(ev);
-            };
-            evtSource.addEventListener('status', (e) => {
+            const src = new EventSource('/api/stream');
+            src.onmessage = (e) => addEvent(JSON.parse(e.data));
+            src.addEventListener('status', (e) => {
                 const sessions = JSON.parse(e.data);
                 sessions.sort((a, b) => a.name.localeCompare(b.name));
-                updateSessionCards(sessions);
-                document.getElementById('last-update').textContent =
-                    'Updated: ' + new Date().toLocaleTimeString();
+                sessions.forEach(s => sessionsData[s.name] = s);
+                updateSidebar(sessions);
+                updateTabDots();
+                document.getElementById('session-count').textContent = sessions.length + ' sessions';
+                document.getElementById('last-update').textContent = new Date().toLocaleTimeString();
             });
         }
-        // Start SSE after page is fully rendered
-        if (document.readyState === 'complete') { connectSSE(); }
-        else { window.addEventListener('load', connectSSE); }
+        if (document.readyState === 'complete') connectSSE();
+        else window.addEventListener('load', connectSSE);
 
-        function addEvent(ev) {
-            const list = document.getElementById('event-list');
-            const ts = new Date(ev.ts * 1000).toLocaleTimeString();
-            const row = document.createElement('div');
-            row.className = 'event-row';
-            row.innerHTML = `
-                <span class="ts">${ts}</span>
-                <span class="session">${ev.session}${ev.pane ? ':' + ev.pane : ''}</span>
-                <span class="change">${ev.old_state || '?'} → ${ev.new_state} ${ev.details || ''}</span>
-            `;
-            list.prepend(row);
-            // Keep max 50 events
-            while (list.children.length > 50) list.removeChild(list.lastChild);
-        }
-
-        function updateSessionCards(sessions) {
-            const grid = document.getElementById('sessions-grid');
-            document.getElementById('session-count').textContent = sessions.length + ' sessions';
-
-            if (sessions.length === 0) {
-                grid.innerHTML = `
-                    <div class="empty-state">
-                        <div class="icon">🚀</div>
-                        <p>No Zellij sessions running</p>
-                    </div>`;
-                return;
-            }
-
-            const stateIcons = {waiting: '🔔', active: '⏳', idle: '✅', error: '❌', unknown: '❓'};
-            grid.innerHTML = sessions.map(s => `
-                <div class="session-card state-${s.state}" data-session="${s.name}" onclick="viewPane('${s.name}')">
-                    <div class="card-header">
-                        <h3>${s.name}</h3>
-                        <span class="state-badge ${s.state}">
-                            ${stateIcons[s.state] || '❓'} ${s.state}
-                        </span>
+        // ── Sidebar ────────────────────────────────
+        function updateSidebar(sessions) {
+            const list = document.getElementById('session-list');
+            const icons = {waiting:'🔔', active:'⏳', idle:'✅', error:'❌', unknown:'❓'};
+            list.innerHTML = sessions.map(s => `
+                <div class="session-item ${dockedSessions.includes(s.name) ? 'docked' : ''}"
+                     data-session="${s.name}"
+                     onclick="dockSession('${s.name}')"
+                     ondblclick="dockSession('${s.name}', true)">
+                    <div class="si-top">
+                        <span class="si-name">${esc(s.name)}</span>
+                        <span class="si-state ${s.state}">${s.state}</span>
                     </div>
-                    <div class="card-meta">
-                        idle: ${s.idle_seconds}s
-                        ${s.is_current ? ' · current' : ''}
-                    </div>
-                    <div class="card-preview">${escapeHtml(s.last_line || '')}</div>
-                    <div class="card-actions">
-                        <button onclick="event.stopPropagation(); viewPane('${s.name}')">👁 View</button>
-                        <button class="danger" onclick="event.stopPropagation(); deleteSession('${s.name}')">✕ Remove</button>
-                    </div>
+                    <div class="si-preview">${esc(s.last_line || '')}</div>
+                    <div class="si-meta">idle ${s.idle_seconds}s</div>
                 </div>
             `).join('');
         }
 
-        async function viewPane(session) {
-            currentSession = session;
-            document.getElementById('modal-title').textContent = session;
-            document.getElementById('pane-modal').classList.add('active');
-            document.getElementById('send-input').focus();
-            await refreshPaneContent();
-            refreshInterval = setInterval(refreshPaneContent, 3000);
+        // ── Dock / Undock ──────────────────────────
+        function dockSession(name, fullscreen) {
+            if (fullscreen) { setLayout('1'); }
+            if (!dockedSessions.includes(name)) {
+                const max = maxPanels[currentLayout];
+                if (dockedSessions.length >= max) {
+                    // Replace the last panel
+                    undockSession(dockedSessions[dockedSessions.length - 1], true);
+                }
+                dockedSessions.push(name);
+                startPanelRefresh(name);
+            }
+            activeTab = name;
+            renderPanels();
         }
 
-        async function refreshPaneContent() {
-            if (!currentSession) return;
+        function undockSession(name, quiet) {
+            dockedSessions = dockedSessions.filter(n => n !== name);
+            if (panelRefreshTimers[name]) { clearInterval(panelRefreshTimers[name]); delete panelRefreshTimers[name]; }
+            if (activeTab === name) activeTab = dockedSessions[0] || null;
+            if (!quiet) renderPanels();
+        }
+
+        // ── Layout ─────────────────────────────────
+        function setLayout(layout) {
+            currentLayout = layout;
+            document.querySelectorAll('.layout-btns button').forEach(b => b.classList.remove('active'));
+            document.querySelector(`.layout-btns button[onclick="setLayout('${layout}')"]`).classList.add('active');
+            // Trim docked if exceeds new layout max
+            const max = maxPanels[layout];
+            while (dockedSessions.length > max) {
+                undockSession(dockedSessions[dockedSessions.length - 1], true);
+            }
+            renderPanels();
+        }
+
+        // ── Render panels ──────────────────────────
+        function renderPanels() {
+            const container = document.getElementById('panels-container');
+            container.className = `panels-container layout-${currentLayout}`;
+
+            // Render tab bar
+            const tabBar = document.getElementById('tab-bar');
+            tabBar.innerHTML = dockedSessions.map(name => {
+                const s = sessionsData[name] || {};
+                return `<div class="tab ${name === activeTab ? 'active' : ''}" onclick="activeTab='${name}'; renderPanels();">
+                    <span class="tab-dot ${s.state || 'unknown'}"></span>
+                    ${esc(name)}
+                    <span class="tab-close" onclick="event.stopPropagation(); undockSession('${name}')">&times;</span>
+                </div>`;
+            }).join('');
+
+            if (dockedSessions.length === 0) {
+                container.innerHTML = `<div class="panel-empty"><div style="text-align:center">
+                    <div style="font-size:2rem;margin-bottom:8px">👈</div>
+                    <div>Click a session to dock it here</div>
+                    <div class="hint">Use layout buttons to show 1, 2, or 4 panels</div>
+                </div></div>`;
+                return;
+            }
+
+            const max = maxPanels[currentLayout];
+            // Show up to max panels; for layout-1, only show active tab
+            let visible;
+            if (currentLayout === '1') {
+                visible = activeTab ? [activeTab] : [dockedSessions[0]];
+            } else {
+                visible = dockedSessions.slice(0, max);
+            }
+
+            container.innerHTML = visible.map(name => {
+                const s = sessionsData[name] || {};
+                const isFocused = name === activeTab;
+                return `<div class="term-panel ${isFocused ? 'focused' : ''}" data-session="${name}" onclick="activeTab='${name}'; renderPanels();">
+                    <div class="term-header">
+                        <span>
+                            <span class="th-name">${esc(name)}</span>
+                            <span class="th-state"> · ${s.state || '?'} · idle ${s.idle_seconds || 0}s</span>
+                        </span>
+                        <span class="th-close" onclick="event.stopPropagation(); undockSession('${name}')">&times;</span>
+                    </div>
+                    <div class="term-body" id="term-${name}" tabindex="0"
+                         onkeydown="handleTermKey(event, '${name}')"
+                         onclick="this.focus()">Loading...</div>
+                    <div class="term-input">
+                        <input type="text" id="input-${name}" placeholder="$ type command..."
+                               onkeydown="if(event.key==='Enter') sendCmd('${name}')">
+                        <button onclick="sendCmd('${name}')">▶</button>
+                    </div>
+                </div>`;
+            }).join('');
+
+            // Fill empty grid cells
+            for (let i = visible.length; i < max; i++) {
+                container.innerHTML += `<div class="panel-empty"><div style="text-align:center;opacity:0.4">
+                    <div style="font-size:1.5rem">+</div>
+                    <div class="hint">Click a session to fill</div>
+                </div></div>`;
+            }
+
+            // Load content for visible panels
+            visible.forEach(name => refreshPanel(name));
+
+            // Highlight sidebar items
+            document.querySelectorAll('.session-item').forEach(el => {
+                el.classList.toggle('docked', dockedSessions.includes(el.dataset.session));
+            });
+        }
+
+        // ── Panel content refresh ──────────────────
+        async function refreshPanel(name) {
             try {
-                const resp = await fetch(`/api/pane/${currentSession}`);
+                const resp = await fetch(`/api/pane/${name}`);
                 const data = await resp.json();
-                const el = document.getElementById('terminal-content');
-                el.textContent = data.content || '(no content)';
-                el.scrollTop = el.scrollHeight;
-            } catch (e) {
-                console.error('Failed to refresh pane:', e);
+                const el = document.getElementById(`term-${name}`);
+                if (el) {
+                    const buf = inlineBuffers[name] || '';
+                    /* Build content: real output + inline cursor line */
+                    const content = data.content || '(no content)';
+                    if (buf) {
+                        el.innerHTML = '';
+                        el.appendChild(document.createTextNode(content));
+                        const cursorLine = document.createElement('span');
+                        cursorLine.className = 'inline-input';
+                        cursorLine.textContent = buf;
+                        el.appendChild(cursorLine);
+                    } else {
+                        el.textContent = content;
+                    }
+                    el.scrollTop = el.scrollHeight;
+                }
+            } catch (e) { /* ignore */ }
+        }
+
+        function startPanelRefresh(name) {
+            if (panelRefreshTimers[name]) return;
+            panelRefreshTimers[name] = setInterval(() => {
+                if (document.getElementById(`term-${name}`)) refreshPanel(name);
+            }, 2500);
+        }
+
+        function updateTabDots() {
+            document.querySelectorAll('.tab .tab-dot').forEach(dot => {
+                const tab = dot.closest('.tab');
+                if (!tab) return;
+                const name = tab.textContent.trim().replace('×', '').trim();
+                const s = sessionsData[name];
+                if (s) { dot.className = `tab-dot ${s.state}`; }
+            });
+        }
+
+        // ── Inline terminal typing (type at the prompt) ──
+        function handleTermKey(e, name) {
+            if (e.ctrlKey && e.key === 'c') {
+                // Ctrl+C → send interrupt
+                e.preventDefault();
+                fetch(`/api/session/${name}/send`, {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+                    body: `text=${encodeURIComponent('\x03')}`
+                });
+                inlineBuffers[name] = '';
+                refreshPanel(name);
+                return;
+            }
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                const text = inlineBuffers[name] || '';
+                inlineBuffers[name] = '';
+                fetch(`/api/session/${name}/send`, {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+                    body: `text=${encodeURIComponent(text)}`
+                }).then(() => setTimeout(() => refreshPanel(name), 800));
+                return;
+            }
+            if (e.key === 'Backspace') {
+                e.preventDefault();
+                if (!inlineBuffers[name]) return;
+                inlineBuffers[name] = inlineBuffers[name].slice(0, -1);
+                refreshPanel(name);
+                return;
+            }
+            if (e.key === 'Escape') {
+                e.preventDefault();
+                inlineBuffers[name] = '';
+                refreshPanel(name);
+                return;
+            }
+            if (e.key === 'Tab') {
+                e.preventDefault();
+                inlineBuffers[name] = (inlineBuffers[name] || '') + '\t';
+                // Send tab character for shell completion
+                fetch(`/api/session/${name}/send`, {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+                    body: `text=${encodeURIComponent('\t')}`
+                }).then(() => { inlineBuffers[name] = ''; setTimeout(() => refreshPanel(name), 500); });
+                return;
+            }
+            // Regular character
+            if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) {
+                e.preventDefault();
+                inlineBuffers[name] = (inlineBuffers[name] || '') + e.key;
+                // Update inline cursor immediately (no fetch needed)
+                const el = document.getElementById(`term-${name}`);
+                if (el) {
+                    let cursor = el.querySelector('.inline-input');
+                    if (!cursor) {
+                        cursor = document.createElement('span');
+                        cursor.className = 'inline-input';
+                        el.appendChild(cursor);
+                    }
+                    cursor.textContent = inlineBuffers[name];
+                    el.scrollTop = el.scrollHeight;
+                }
             }
         }
 
-        function closeModal() {
-            document.getElementById('pane-modal').classList.remove('active');
-            currentSession = null;
-            if (refreshInterval) { clearInterval(refreshInterval); refreshInterval = null; }
-        }
-
-        async function sendCommand() {
-            if (!currentSession) return;
-            const input = document.getElementById('send-input');
+        // ── Send command (bottom bar) ─────────────
+        async function sendCmd(name) {
+            const input = document.getElementById(`input-${name}`);
+            if (!input) return;
             const text = input.value;
             if (!text) return;
             input.value = '';
             try {
-                await fetch(`/api/session/${currentSession}/send`, {
+                await fetch(`/api/session/${name}/send`, {
                     method: 'POST',
                     headers: {'Content-Type': 'application/x-www-form-urlencoded'},
                     body: `text=${encodeURIComponent(text)}`
                 });
-                setTimeout(refreshPaneContent, 1000);
-            } catch (e) {
-                console.error('Send failed:', e);
-            }
+                setTimeout(() => refreshPanel(name), 800);
+            } catch (e) { console.error('Send failed:', e); }
         }
 
-        async function deleteSession(name) {
-            if (!confirm(`Delete session "${name}"?`)) return;
+        // ── Events ─────────────────────────────────
+        function addEvent(ev) {
+            const list = document.getElementById('event-list');
+            const ts = new Date(ev.ts * 1000).toLocaleTimeString();
+            const row = document.createElement('div');
+            row.className = 'ev-row';
+            row.innerHTML = `<span class="ev-ts">${ts}</span><span class="ev-session">${ev.session}</span><span>${ev.old_state||'?'}→${ev.new_state}</span>`;
+            list.prepend(row);
+            while (list.children.length > 30) list.removeChild(list.lastChild);
+        }
+        let eventsCollapsed = false;
+        function toggleEvents() {
+            eventsCollapsed = !eventsCollapsed;
+            document.getElementById('event-list').classList.toggle('collapsed', eventsCollapsed);
+            document.getElementById('ev-toggle').textContent = eventsCollapsed ? '▶' : '▼';
+        }
+
+        // ── Create / Delete session ────────────────
+        async function createSession() {
+            const name = prompt('Session name:');
+            if (!name) return;
             try {
-                await fetch(`/api/session/${name}`, { method: 'DELETE' });
-                location.reload();
-            } catch (e) {
-                console.error('Delete failed:', e);
-            }
+                await fetch(`/api/session/${name}`, { method: 'POST' });
+                setTimeout(() => dockSession(name), 2000);
+            } catch (e) { console.error('Create failed:', e); }
         }
 
-        function escapeHtml(text) {
+        // ── Utilities ──────────────────────────────
+        function esc(text) {
             const d = document.createElement('div');
             d.textContent = text;
             return d.innerHTML;
         }
 
-        // Close modal on Escape
-        document.addEventListener('keydown', (e) => {
-            if (e.key === 'Escape') closeModal();
+        // Convert epoch timestamps
+        document.querySelectorAll('.ts-epoch').forEach(el => {
+            const ts = parseFloat(el.dataset.ts);
+            if (ts) el.textContent = new Date(ts * 1000).toLocaleTimeString();
         });
+
+        // Keyboard: Escape to undock focused panel
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape' && activeTab) { undockSession(activeTab); }
+        });
+
+        // Auto-dock first two sessions on load
+        const initialSessions = {{ sessions | tojson }};
+        initialSessions.slice(0, maxPanels[currentLayout]).forEach(s => {
+            dockedSessions.push(s.name);
+            sessionsData[s.name] = s;
+            startPanelRefresh(s.name);
+        });
+        if (dockedSessions.length > 0) activeTab = dockedSessions[0];
+        renderPanels();
     </script>
 </body>
 </html>

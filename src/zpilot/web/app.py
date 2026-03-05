@@ -111,11 +111,15 @@ def _strip_ansi(text: str) -> str:
 
 @app.get("/api/stream")
 async def event_stream():
-    """SSE endpoint for live event updates."""
+    """SSE endpoint for live event updates with built-in state change detection."""
     async def generate():
         last_count = len(event_bus.recent(999))
+        prev_states: dict[str, str] = {}  # session -> last known state
+
         while True:
             await asyncio.sleep(2)
+
+            # Check for new events from daemon/external
             events = event_bus.recent(999)
             if len(events) > last_count:
                 new_events = events[last_count:]
@@ -123,8 +127,21 @@ async def event_stream():
                 for ev in new_events:
                     data = json.dumps(ev.to_dict())
                     yield f"data: {data}\n\n"
-            # Also send periodic session status
+
+            # Poll session status and detect state changes inline
             sessions = await _get_session_data()
+            for s in sessions:
+                old = prev_states.get(s["name"])
+                cur = s["state"]
+                if old and old != cur:
+                    from ..models import Event as EventModel
+                    ev = EventModel(session=s["name"], pane="main",
+                               old_state=old, new_state=cur)
+                    event_bus.emit(ev)
+                    last_count += 1
+                    yield f"data: {json.dumps(ev.to_dict())}\n\n"
+                prev_states[s["name"]] = cur
+
             yield f"event: status\ndata: {json.dumps(sessions)}\n\n"
 
     return StreamingResponse(generate(), media_type="text/event-stream")

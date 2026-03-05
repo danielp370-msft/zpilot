@@ -24,3 +24,10 @@ zpilot = "zpilot.cli:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/zpilot"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+markers = [
+    "asyncio: mark a test as async",
+]

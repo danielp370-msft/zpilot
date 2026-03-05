@@ -13,6 +13,9 @@ from .models import Pane, Session
 
 ZELLIJ_BIN = os.environ.get("ZPILOT_ZELLIJ_BIN", "zellij")
 DUMP_DIR = Path(tempfile.gettempdir()) / "zpilot" / "dumps"
+LOG_DIR = Path(tempfile.gettempdir()) / "zpilot" / "logs"
+FIFO_DIR = Path(tempfile.gettempdir()) / "zpilot" / "fifos"
+SHELL_WRAPPER = Path(__file__).parent / "shell_wrapper.py"
 
 
 async def _run(args: list[str], check: bool = True) -> str:
@@ -65,15 +68,22 @@ async def new_session(
     layout: str | None = None,
     cwd: str | None = None,
     detached: bool = True,
+    log: bool = True,
+    command: str | None = None,
 ) -> str:
-    """Create a new Zellij session. Returns session name."""
+    """Create a new Zellij session with monitored shell wrapper.
+
+    The wrapper provides:
+      - Output logging to /tmp/zpilot/logs/<name>--main.log
+      - Command injection via /tmp/zpilot/fifos/<name>.fifo
+    """
     args = ["--session", name]
     if layout:
         args.extend(["--layout", layout])
     if cwd:
         args.extend(["--new-session-with-layout", cwd])
+
     if detached:
-        # Start detached by launching in background
         proc = await asyncio.create_subprocess_exec(
             ZELLIJ_BIN, *args,
             stdout=asyncio.subprocess.DEVNULL,
@@ -82,8 +92,23 @@ async def new_session(
             env={**os.environ, "ZELLIJ_AUTO_ATTACH": "false"},
             start_new_session=True,
         )
-        # Give it a moment to start
-        await asyncio.sleep(0.5)
+        await asyncio.sleep(1)
+
+    if log and not layout:
+        # Close the "About Zellij" floating pane that steals focus
+        await _action(name, ["close-pane"], check=False)
+        await asyncio.sleep(0.3)
+
+        # Launch the monitored shell wrapper in a new pane (takes focus)
+        wrapper_cmd = ["python3", str(SHELL_WRAPPER), name]
+        if command:
+            wrapper_cmd.append(command)
+        await _run(
+            ["--session", name, "run", "--"] + wrapper_cmd,
+            check=False,
+        )
+        await asyncio.sleep(1)
+
     return name
 
 
@@ -122,8 +147,25 @@ async def new_pane(
     direction: str | None = None,
     cwd: str | None = None,
     floating: bool = False,
-) -> None:
-    """Create a new pane."""
+    log: bool = True,
+) -> str | None:
+    """Create a new pane. If log=True, wraps command with `script` for output capture.
+
+    Returns the log file path if logging is enabled.
+    """
+    log_file = None
+    actual_command = command
+
+    if log and name:
+        LOG_DIR.mkdir(parents=True, exist_ok=True)
+        session_part = session or "default"
+        log_file = str(LOG_DIR / f"{session_part}--{name}.log")
+        # Wrap command with `script -f` for real-time output logging
+        if command:
+            actual_command = f"script -f -q {log_file} -c '{command}'"
+        else:
+            actual_command = f"script -f -q {log_file}"
+
     args = ["new-pane"]
     if name:
         args.extend(["--name", name])
@@ -133,10 +175,11 @@ async def new_pane(
         args.extend(["--cwd", cwd])
     if floating:
         args.append("--floating")
-    if command:
+    if actual_command:
         args.append("--")
-        args.extend(command.split())
+        args.extend(["bash", "-c", actual_command])
     await _action(session, args)
+    return log_file
 
 
 async def close_pane(session: str | None = None) -> None:
@@ -153,8 +196,21 @@ async def write_to_pane(
     text: str,
     session: str | None = None,
 ) -> None:
-    """Write text/keystrokes to the focused pane."""
-    # write-chars sends literal text
+    """Write text to the session's monitored shell.
+
+    Uses FIFO injection (works headlessly) with fallback to action write-chars.
+    """
+    if session:
+        fifo = FIFO_DIR / f"{session}.fifo"
+        if fifo.exists():
+            try:
+                fd = os.open(str(fifo), os.O_WRONLY | os.O_NONBLOCK)
+                os.write(fd, text.encode())
+                os.close(fd)
+                return
+            except OSError:
+                pass  # FIFO not ready, fall back
+    # Fallback: write-chars (only works with attached client)
     await _action(session, ["write-chars", text])
 
 
@@ -170,6 +226,16 @@ async def write_bytes(
 
 async def send_enter(session: str | None = None) -> None:
     """Send Enter key to focused pane."""
+    if session:
+        fifo = FIFO_DIR / f"{session}.fifo"
+        if fifo.exists():
+            try:
+                fd = os.open(str(fifo), os.O_WRONLY | os.O_NONBLOCK)
+                os.write(fd, b"\n")
+                os.close(fd)
+                return
+            except OSError:
+                pass
     await write_bytes(b"\n", session)
 
 
@@ -180,18 +246,66 @@ async def send_ctrl_c(session: str | None = None) -> None:
 
 async def dump_pane(
     session: str | None = None,
+    pane_name: str | None = None,
     full: bool = False,
+    tail_lines: int = 50,
 ) -> str:
-    """Dump the screen content of the focused pane. Returns the text."""
+    """Read pane content. Tries log file first (works headless), falls back to dump-screen.
+
+    Args:
+        session: Session name
+        pane_name: Pane name (used to find log file)
+        full: Include full scrollback
+        tail_lines: Number of lines to return from the end
+    """
+    # Strategy 1: Read from log file (works headless)
+    if pane_name:
+        session_part = session or "default"
+        log_file = LOG_DIR / f"{session_part}--{pane_name}.log"
+        if log_file.exists() and log_file.stat().st_size > 0:
+            content = log_file.read_text(errors="replace")
+            if not full:
+                lines = content.splitlines()
+                content = "\n".join(lines[-tail_lines:])
+            return content
+
+    # Strategy 2: Try all log files for this session
+    if session:
+        pattern = f"{session}--*.log"
+        logs = sorted(LOG_DIR.glob(pattern), key=lambda p: p.stat().st_mtime, reverse=True)
+        if logs:
+            content = logs[0].read_text(errors="replace")
+            if not full:
+                lines = content.splitlines()
+                content = "\n".join(lines[-tail_lines:])
+            return content
+
+    # Strategy 3: dump-screen (requires attached client)
     DUMP_DIR.mkdir(parents=True, exist_ok=True)
     dump_file = DUMP_DIR / f"dump-{session or 'current'}.txt"
     args = ["dump-screen", str(dump_file)]
     if full:
         args.append("--full")
     await _action(session, args, check=False)
-    if dump_file.exists():
-        content = dump_file.read_text()
-        return content
+    if dump_file.exists() and dump_file.stat().st_size > 0:
+        return dump_file.read_text()
+
+    # Strategy 4: Run a command inside the session to capture state
+    if session:
+        marker = f"__zpilot_probe_{os.getpid()}__"
+        probe_file = DUMP_DIR / f"probe-{session}.txt"
+        await _run(
+            ["--session", session, "run", "--floating", "--close-on-exit",
+             "--", "bash", "-c", f"echo {marker} > {probe_file}"],
+            check=False,
+        )
+        await asyncio.sleep(0.5)
+        if probe_file.exists():
+            content = probe_file.read_text()
+            probe_file.unlink(missing_ok=True)
+            if marker in content:
+                return "(session alive, but no screen content available — use named panes for monitoring)"
+
     return ""
 
 
@@ -202,6 +316,40 @@ async def run_command_in_pane(
     """Type a command and press Enter in the focused pane."""
     await write_to_pane(command, session)
     await send_enter(session)
+
+
+async def run_in_session(
+    command: str,
+    session: str,
+    capture: bool = False,
+    timeout: float = 10.0,
+) -> str:
+    """Run a command inside a session using `zellij run`. Works headless.
+
+    If capture=True, writes output to a temp file and returns it.
+    """
+    if capture:
+        out_file = DUMP_DIR / f"run-{session}-{os.getpid()}.txt"
+        DUMP_DIR.mkdir(parents=True, exist_ok=True)
+        wrapped = f"bash -c '{command} > {out_file} 2>&1'"
+        await _run(
+            ["--session", session, "run", "--floating", "--close-on-exit",
+             "--", "bash", "-c", f"{command} > {out_file} 2>&1"],
+            check=False,
+        )
+        await asyncio.sleep(min(timeout, 2.0))
+        if out_file.exists():
+            result = out_file.read_text()
+            out_file.unlink(missing_ok=True)
+            return result
+        return ""
+    else:
+        await _run(
+            ["--session", session, "run", "--floating", "--close-on-exit",
+             "--", "bash", "-c", command],
+            check=False,
+        )
+        return ""
 
 
 # ── Tab operations ──────────────────────────────────────────────────

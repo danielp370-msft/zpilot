@@ -1,0 +1,460 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>zpilot — Mission Control</title>
+    <style>
+        :root {
+            --bg: #0d1117;
+            --card-bg: #161b22;
+            --border: #30363d;
+            --text: #e6edf3;
+            --text-dim: #8b949e;
+            --accent: #58a6ff;
+            --green: #3fb950;
+            --yellow: #d29922;
+            --red: #f85149;
+            --orange: #db6d28;
+        }
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', monospace;
+            background: var(--bg);
+            color: var(--text);
+            padding: 20px;
+            min-height: 100vh;
+        }
+        header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 24px;
+            padding-bottom: 16px;
+            border-bottom: 1px solid var(--border);
+        }
+        header h1 {
+            font-size: 1.5rem;
+            color: var(--accent);
+        }
+        header h1 span { color: var(--text-dim); font-weight: normal; }
+        .status-bar {
+            display: flex;
+            gap: 16px;
+            font-size: 0.85rem;
+            color: var(--text-dim);
+        }
+        .status-bar .live { color: var(--green); }
+
+        /* Session Grid */
+        .sessions {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+            gap: 16px;
+            margin-bottom: 24px;
+        }
+        .session-card {
+            background: var(--card-bg);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 16px;
+            transition: border-color 0.3s;
+            cursor: pointer;
+        }
+        .session-card:hover { border-color: var(--accent); }
+        .session-card.state-waiting { border-left: 3px solid var(--orange); }
+        .session-card.state-active { border-left: 3px solid var(--yellow); }
+        .session-card.state-idle { border-left: 3px solid var(--green); }
+        .session-card.state-error { border-left: 3px solid var(--red); }
+        .session-card.state-unknown { border-left: 3px solid var(--text-dim); }
+
+        .card-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 8px;
+        }
+        .card-header h3 { font-size: 1rem; }
+        .state-badge {
+            font-size: 0.75rem;
+            padding: 2px 8px;
+            border-radius: 12px;
+            text-transform: uppercase;
+            font-weight: bold;
+        }
+        .state-badge.waiting { background: var(--orange); color: #000; }
+        .state-badge.active { background: var(--yellow); color: #000; }
+        .state-badge.idle { background: var(--green); color: #000; }
+        .state-badge.error { background: var(--red); color: #fff; }
+        .state-badge.unknown { background: var(--text-dim); color: #000; }
+
+        .card-meta {
+            font-size: 0.8rem;
+            color: var(--text-dim);
+            margin-bottom: 8px;
+        }
+        .card-preview {
+            background: var(--bg);
+            border-radius: 4px;
+            padding: 8px;
+            font-size: 0.75rem;
+            max-height: 60px;
+            overflow: hidden;
+            color: var(--text-dim);
+            white-space: pre;
+            line-height: 1.4;
+        }
+        .card-actions {
+            margin-top: 12px;
+            display: flex;
+            gap: 8px;
+        }
+        .card-actions button {
+            font-family: inherit;
+            font-size: 0.75rem;
+            padding: 4px 12px;
+            border-radius: 4px;
+            border: 1px solid var(--border);
+            background: var(--card-bg);
+            color: var(--text);
+            cursor: pointer;
+        }
+        .card-actions button:hover { border-color: var(--accent); }
+        .card-actions button.danger:hover { border-color: var(--red); color: var(--red); }
+
+        /* Events Log */
+        .events-section {
+            background: var(--card-bg);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 16px;
+            margin-bottom: 24px;
+        }
+        .events-section h2 {
+            font-size: 1rem;
+            margin-bottom: 12px;
+            color: var(--text-dim);
+        }
+        .event-list {
+            max-height: 250px;
+            overflow-y: auto;
+            font-size: 0.8rem;
+        }
+        .event-row {
+            display: flex;
+            gap: 12px;
+            padding: 4px 0;
+            border-bottom: 1px solid rgba(48, 54, 61, 0.5);
+        }
+        .event-row .ts { color: var(--text-dim); min-width: 70px; }
+        .event-row .session { color: var(--accent); min-width: 120px; }
+        .event-row .change { color: var(--text); }
+
+        /* Pane Viewer Modal */
+        .modal-overlay {
+            display: none;
+            position: fixed;
+            top: 0; left: 0; right: 0; bottom: 0;
+            background: rgba(0,0,0,0.7);
+            z-index: 100;
+            justify-content: center;
+            align-items: center;
+        }
+        .modal-overlay.active { display: flex; }
+        .modal {
+            background: var(--card-bg);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            width: 80%;
+            max-width: 900px;
+            max-height: 80vh;
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+        }
+        .modal-header {
+            padding: 12px 16px;
+            border-bottom: 1px solid var(--border);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .modal-header h3 { font-size: 1rem; }
+        .modal-close {
+            background: none; border: none; color: var(--text-dim);
+            font-size: 1.5rem; cursor: pointer;
+        }
+        .terminal-view {
+            background: #000;
+            color: #0f0;
+            padding: 12px;
+            font-size: 0.8rem;
+            line-height: 1.5;
+            overflow-y: auto;
+            flex: 1;
+            white-space: pre;
+            min-height: 300px;
+        }
+        .modal-input {
+            display: flex;
+            border-top: 1px solid var(--border);
+        }
+        .modal-input input {
+            flex: 1;
+            background: var(--bg);
+            border: none;
+            color: var(--text);
+            padding: 10px;
+            font-family: inherit;
+            font-size: 0.85rem;
+        }
+        .modal-input button {
+            padding: 10px 20px;
+            background: var(--accent);
+            border: none;
+            color: #000;
+            font-family: inherit;
+            cursor: pointer;
+        }
+
+        .empty-state {
+            text-align: center;
+            padding: 60px;
+            color: var(--text-dim);
+        }
+        .empty-state .icon { font-size: 3rem; margin-bottom: 12px; }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+        .live-dot {
+            display: inline-block;
+            width: 8px; height: 8px;
+            background: var(--green);
+            border-radius: 50%;
+            animation: pulse 2s infinite;
+        }
+    </style>
+</head>
+<body>
+    <header>
+        <h1>⚡ zpilot <span>— Mission Control</span></h1>
+        <div class="status-bar">
+            <span class="live"><span class="live-dot"></span> Live</span>
+            <span id="session-count">{{ sessions|length }} sessions</span>
+            <span id="last-update">—</span>
+        </div>
+    </header>
+
+    <div class="sessions" id="sessions-grid">
+        {% if sessions %}
+            {% for s in sessions %}
+            <div class="session-card state-{{ s.state }}" data-session="{{ s.name }}" onclick="viewPane('{{ s.name }}')">
+                <div class="card-header">
+                    <h3>{{ s.name }}</h3>
+                    <span class="state-badge {{ s.state }}">
+                        {% if s.state == 'waiting' %}🔔{% elif s.state == 'active' %}⏳{% elif s.state == 'idle' %}✅{% elif s.state == 'error' %}❌{% else %}❓{% endif %}
+                        {{ s.state }}
+                    </span>
+                </div>
+                <div class="card-meta">
+                    idle: {{ s.idle_seconds }}s
+                    {% if s.is_current %} · current{% endif %}
+                </div>
+                <div class="card-preview">{{ s.last_line }}</div>
+                <div class="card-actions">
+                    <button onclick="event.stopPropagation(); viewPane('{{ s.name }}')">👁 View</button>
+                    <button class="danger" onclick="event.stopPropagation(); deleteSession('{{ s.name }}')">✕ Remove</button>
+                </div>
+            </div>
+            {% endfor %}
+        {% else %}
+            <div class="empty-state">
+                <div class="icon">🚀</div>
+                <p>No Zellij sessions running</p>
+                <p style="font-size: 0.8rem; margin-top: 8px;">Create one with: <code>zpilot new my-session</code></p>
+            </div>
+        {% endif %}
+    </div>
+
+    <div class="events-section">
+        <h2>📋 Events</h2>
+        <div class="event-list" id="event-list">
+            {% for ev in events %}
+            <div class="event-row">
+                <span class="ts ts-epoch" data-ts="{{ ev.ts }}">{{ ev.ts | int | string }}</span>
+                <span class="session">{{ ev.session }}{% if ev.pane %}:{{ ev.pane }}{% endif %}</span>
+                <span class="change">{{ ev.old_state or '?' }} → {{ ev.new_state }} {{ ev.details or '' }}</span>
+            </div>
+            {% endfor %}
+            {% if not events %}
+            <div style="color: var(--text-dim); padding: 12px;">No events yet</div>
+            {% endif %}
+        </div>
+    </div>
+
+    <!-- Pane Viewer Modal -->
+    <div class="modal-overlay" id="pane-modal">
+        <div class="modal">
+            <div class="modal-header">
+                <h3 id="modal-title">Session</h3>
+                <button class="modal-close" onclick="closeModal()">&times;</button>
+            </div>
+            <div class="terminal-view" id="terminal-content">Loading...</div>
+            <div class="modal-input">
+                <input type="text" id="send-input" placeholder="Type command and press Enter..." onkeydown="if(event.key==='Enter') sendCommand()">
+                <button onclick="sendCommand()">Send ▶</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let currentSession = null;
+        let refreshInterval = null;
+
+        // Convert epoch timestamps rendered by server to local time
+        document.querySelectorAll('.ts-epoch').forEach(el => {
+            const ts = parseFloat(el.dataset.ts);
+            if (ts) el.textContent = new Date(ts * 1000).toLocaleTimeString();
+        });
+
+        // Defer SSE so it doesn't block page load (Playwright-friendly)
+        let evtSource = null;
+        function connectSSE() {
+            evtSource = new EventSource('/api/stream');
+            evtSource.onmessage = (e) => {
+                const ev = JSON.parse(e.data);
+                addEvent(ev);
+            };
+            evtSource.addEventListener('status', (e) => {
+                const sessions = JSON.parse(e.data);
+                sessions.sort((a, b) => a.name.localeCompare(b.name));
+                updateSessionCards(sessions);
+                document.getElementById('last-update').textContent =
+                    'Updated: ' + new Date().toLocaleTimeString();
+            });
+        }
+        // Start SSE after page is fully rendered
+        if (document.readyState === 'complete') { connectSSE(); }
+        else { window.addEventListener('load', connectSSE); }
+
+        function addEvent(ev) {
+            const list = document.getElementById('event-list');
+            const ts = new Date(ev.ts * 1000).toLocaleTimeString();
+            const row = document.createElement('div');
+            row.className = 'event-row';
+            row.innerHTML = `
+                <span class="ts">${ts}</span>
+                <span class="session">${ev.session}${ev.pane ? ':' + ev.pane : ''}</span>
+                <span class="change">${ev.old_state || '?'} → ${ev.new_state} ${ev.details || ''}</span>
+            `;
+            list.prepend(row);
+            // Keep max 50 events
+            while (list.children.length > 50) list.removeChild(list.lastChild);
+        }
+
+        function updateSessionCards(sessions) {
+            const grid = document.getElementById('sessions-grid');
+            document.getElementById('session-count').textContent = sessions.length + ' sessions';
+
+            if (sessions.length === 0) {
+                grid.innerHTML = `
+                    <div class="empty-state">
+                        <div class="icon">🚀</div>
+                        <p>No Zellij sessions running</p>
+                    </div>`;
+                return;
+            }
+
+            const stateIcons = {waiting: '🔔', active: '⏳', idle: '✅', error: '❌', unknown: '❓'};
+            grid.innerHTML = sessions.map(s => `
+                <div class="session-card state-${s.state}" data-session="${s.name}" onclick="viewPane('${s.name}')">
+                    <div class="card-header">
+                        <h3>${s.name}</h3>
+                        <span class="state-badge ${s.state}">
+                            ${stateIcons[s.state] || '❓'} ${s.state}
+                        </span>
+                    </div>
+                    <div class="card-meta">
+                        idle: ${s.idle_seconds}s
+                        ${s.is_current ? ' · current' : ''}
+                    </div>
+                    <div class="card-preview">${escapeHtml(s.last_line || '')}</div>
+                    <div class="card-actions">
+                        <button onclick="event.stopPropagation(); viewPane('${s.name}')">👁 View</button>
+                        <button class="danger" onclick="event.stopPropagation(); deleteSession('${s.name}')">✕ Remove</button>
+                    </div>
+                </div>
+            `).join('');
+        }
+
+        async function viewPane(session) {
+            currentSession = session;
+            document.getElementById('modal-title').textContent = session;
+            document.getElementById('pane-modal').classList.add('active');
+            document.getElementById('send-input').focus();
+            await refreshPaneContent();
+            refreshInterval = setInterval(refreshPaneContent, 3000);
+        }
+
+        async function refreshPaneContent() {
+            if (!currentSession) return;
+            try {
+                const resp = await fetch(`/api/pane/${currentSession}`);
+                const data = await resp.json();
+                const el = document.getElementById('terminal-content');
+                el.textContent = data.content || '(no content)';
+                el.scrollTop = el.scrollHeight;
+            } catch (e) {
+                console.error('Failed to refresh pane:', e);
+            }
+        }
+
+        function closeModal() {
+            document.getElementById('pane-modal').classList.remove('active');
+            currentSession = null;
+            if (refreshInterval) { clearInterval(refreshInterval); refreshInterval = null; }
+        }
+
+        async function sendCommand() {
+            if (!currentSession) return;
+            const input = document.getElementById('send-input');
+            const text = input.value;
+            if (!text) return;
+            input.value = '';
+            try {
+                await fetch(`/api/session/${currentSession}/send`, {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+                    body: `text=${encodeURIComponent(text)}`
+                });
+                setTimeout(refreshPaneContent, 1000);
+            } catch (e) {
+                console.error('Send failed:', e);
+            }
+        }
+
+        async function deleteSession(name) {
+            if (!confirm(`Delete session "${name}"?`)) return;
+            try {
+                await fetch(`/api/session/${name}`, { method: 'DELETE' });
+                location.reload();
+            } catch (e) {
+                console.error('Delete failed:', e);
+            }
+        }
+
+        function escapeHtml(text) {
+            const d = document.createElement('div');
+            d.textContent = text;
+            return d.innerHTML;
+        }
+
+        // Close modal on Escape
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape') closeModal();
+        });
+    </script>
+</body>
+</html>

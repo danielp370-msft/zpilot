@@ -129,6 +129,17 @@ def dashboard() -> None:
     app.run()
 
 
+@main.command()
+@click.option("--host", default="0.0.0.0", help="Bind address")
+@click.option("--port", type=int, default=8095, help="Port number")
+def web(host: str, port: int) -> None:
+    """Launch the web dashboard."""
+    ensure_config()
+    from .web.app import run_web
+    click.echo(f"🌐 zpilot web dashboard: http://localhost:{port}")
+    run_web(host=host, port=port)
+
+
 @main.command("notify-test")
 def notify_test() -> None:
     """Send a test notification."""

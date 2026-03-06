@@ -57,16 +57,16 @@ async def api_events(count: int = 30):
 
 
 @app.get("/api/pane/{session_name}")
-async def api_pane_content(session_name: str, pane_name: str = "worker", lines: int = 50):
+async def api_pane_content(session_name: str, pane_name: str = "main", lines: int = 50):
     """JSON API: pane content."""
     content = await zellij.dump_pane(session=session_name, pane_name=pane_name, tail_lines=lines)
     clean = _strip_ansi(content)
-    state = detector.detect(session_name, pane_name, content)
+    state = detector.detect(session_name, "main", clean)
     return {
         "session": session_name,
         "pane": pane_name,
         "state": state.value,
-        "idle_seconds": round(detector.get_idle_seconds(session_name, pane_name), 1),
+        "idle_seconds": round(detector.get_idle_seconds(session_name, "main"), 1),
         "content": clean,
         "lines": clean.strip().splitlines()[-lines:] if clean.strip() else [],
     }
@@ -100,12 +100,28 @@ async def api_send_to_session(name: str, text: str = Form(...)):
 import re as _re
 
 def _strip_ansi(text: str) -> str:
-    """Strip ANSI escape codes and control characters from text."""
+    """Strip ANSI escape codes and control characters from text.
+    
+    For full-screen apps (top, htop, vim), detects screen-clear sequences
+    and only keeps the last frame to prevent infinite scrolling.
+    """
+    # Detect full-screen redraws: split on clear-screen or cursor-home sequences
+    # \x1b[H = cursor home, \x1b[2J = clear screen, \x1b[?1049h = alt screen buffer
+    frames = _re.split(r'\x1b\[2J|\x1b\[\?1049[hl]', text)
+    if len(frames) > 1:
+        # Full-screen app detected — use last non-empty frame
+        for frame in reversed(frames):
+            if frame.strip():
+                text = frame
+                break
+
     text = _re.sub(r'\x1b\[[0-9;?]*[a-zA-Z]', '', text)  # CSI sequences (incl ?-prefixed)
     text = _re.sub(r'\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)', '', text)  # OSC sequences
     text = _re.sub(r'\x1b[()][0-9A-B]', '', text)          # charset switches
     text = _re.sub(r'\x1b[=>]', '', text)                   # keypad mode
     text = _re.sub(r'[\x00-\x08\x0e-\x1f]', '', text)      # control chars (keep \n \t)
+    # Collapse runs of blank lines (from cursor positioning) into single blank line
+    text = _re.sub(r'\n{3,}', '\n\n', text)
     return text
 
 
@@ -159,10 +175,11 @@ async def _get_session_data() -> list[dict]:
         try:
             # Try to read any named pane log
             content = await zellij.dump_pane(session=s.name)
-            state = detector.detect(s.name, "focused", content)
-            idle = detector.get_idle_seconds(s.name, "focused")
-            raw_lines = content.strip().splitlines()[-3:] if content.strip() else []
-            clean_lines = [_strip_ansi(l) for l in raw_lines]
+            clean = _strip_ansi(content)
+            # Use "main" as pane key to match /api/pane default
+            state = detector.detect(s.name, "main", clean)
+            idle = detector.get_idle_seconds(s.name, "main")
+            clean_lines = clean.strip().splitlines()[-3:] if clean.strip() else []
             result.append({
                 "name": s.name,
                 "state": state.value,

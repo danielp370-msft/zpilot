@@ -45,7 +45,8 @@ class PaneDetector:
 
         # Check if content changed since last check
         prev_hash = self._last_hash.get(key)
-        if content_hash != prev_hash:
+        changed = content_hash != prev_hash
+        if changed:
             self._last_hash[key] = content_hash
             self._last_change_time[key] = now
 
@@ -56,38 +57,45 @@ class PaneDetector:
         lines = [l for l in content.splitlines() if l.strip()]
         last_lines = lines[-5:] if lines else []
 
-        # 1. Check for BEL character (terminal bell = needs input)
-        if self.config.bel_detection and "\x07" in content:
-            self._last_state[key] = PaneState.WAITING
-            return PaneState.WAITING
-
-        # 2. Check for error patterns
+        # 1. Check for error patterns
         for line in last_lines:
             for pattern in self._error_res:
                 if pattern.search(line):
                     self._last_state[key] = PaneState.ERROR
                     return PaneState.ERROR
 
-        # 3. Check for prompt patterns (= waiting for input)
-        for line in last_lines[-2:]:  # only check last 2 lines
+        # 2. Check for prompt patterns (= waiting for input)
+        has_prompt = False
+        check_lines = last_lines[-2:] if last_lines else []
+        for line in check_lines:
             for pattern in self._prompt_res:
                 if pattern.search(line.strip()):
-                    # Prompt visible + content stable = waiting
-                    if idle_seconds >= 2.0:
-                        self._last_state[key] = PaneState.WAITING
-                        return PaneState.WAITING
+                    has_prompt = True
+                    break
+            if has_prompt:
+                break
 
-        # 4. Check for idle (no output change for threshold)
+        if has_prompt and idle_seconds >= 1.0:
+            # Prompt is visible and content is stable
+            self._last_state[key] = PaneState.WAITING
+            return PaneState.WAITING
+
+        # 3. Check for BEL character (terminal bell = needs attention)
+        if self.config.bel_detection and "\x07" in content:
+            self._last_state[key] = PaneState.WAITING
+            return PaneState.WAITING
+
+        # 4. Content is changing = active
+        if changed or idle_seconds < 3.0:
+            self._last_state[key] = PaneState.ACTIVE
+            return PaneState.ACTIVE
+
+        # 5. Check for idle (no output change for threshold)
         if idle_seconds >= self.config.idle_threshold:
             self._last_state[key] = PaneState.IDLE
             return PaneState.IDLE
 
-        # 5. Content is changing = active
-        if content_hash != prev_hash or idle_seconds < 5.0:
-            self._last_state[key] = PaneState.ACTIVE
-            return PaneState.ACTIVE
-
-        # Default: still active but slowing down
+        # 6. Between active and idle — still active but slowing down
         self._last_state[key] = PaneState.ACTIVE
         return PaneState.ACTIVE
 

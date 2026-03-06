@@ -87,6 +87,10 @@ class ZpilotConfig:
         r"^\$ $",
         r"^> $",
         r"^❯ ",
+        r"\$\s*$",              # any line ending with $ (common prompts)
+        r"#\s*$",               # root prompt ending with #
+        r">>>\s*$",             # Python REPL
+        r"\.\.\.\s*$",          # Python continuation
     ])
     error_patterns: list[str] = field(default_factory=lambda: [
         r"^Error:",

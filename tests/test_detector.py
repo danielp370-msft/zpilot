@@ -53,12 +53,12 @@ class TestErrorDetection:
 
 class TestPromptDetection:
     def test_dollar_prompt(self, detector):
-        # Dollar prompt — detector returns IDLE when content is static past threshold
+        # Dollar prompt — now matched by \$\s*$ pattern even after strip
         content = "some output\n$ \n"
         detector.detect("s1", "p1", content, now=100.0)
         state = detector.detect("s1", "p1", content, now=106.0)
-        # idle_seconds=6 > idle_threshold=5 → IDLE (prompt check fails because strip() removes trailing space)
-        assert state == PaneState.IDLE
+        # Prompt is visible and idle >= 1.0 → WAITING
+        assert state == PaneState.WAITING
 
     def test_arrow_prompt(self, detector):
         # ❯ pattern is r"^❯ " which starts with ❯ — strip won't remove leading

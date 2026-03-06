@@ -243,18 +243,42 @@
             outline: none;
         }
         .term-body:focus { box-shadow: inset 0 0 0 1px var(--accent); }
+        .term-body .inline-prompt {
+            display: none;
+            margin-top: 2px;
+            color: var(--green);
+        }
+        .term-body:focus .inline-prompt { display: block; }
+        .term-body .inline-prompt .prompt-symbol { color: var(--accent); }
+        .term-body .inline-prompt .prompt-text { color: #e0e0e0; }
+        .term-body .inline-prompt .prompt-cursor {
+            display: inline-block;
+            width: 7px;
+            height: 1.1em;
+            background: var(--green);
+            vertical-align: text-bottom;
+            animation: cursorblink 1s step-end infinite;
+            margin-left: 1px;
+        }
+        @keyframes cursorblink { 50% { opacity: 0; } }
+        /* Legacy inline-input kept for compat */
         .term-body .inline-input {
             color: var(--green);
             border-right: 2px solid var(--green);
-            animation: blink 1s step-end infinite;
+            animation: cursorblink 1s step-end infinite;
             padding-right: 1px;
         }
-        @keyframes blink { 50% { border-color: transparent; } }
         .term-input {
             display: flex;
             border-top: 1px solid var(--border);
             flex-shrink: 0;
         }
+        .term-input.hidden { display: none; }
+        .th-toggle {
+            cursor: pointer; color: var(--text-dim); padding: 0 4px;
+            font-size: 0.65rem; opacity: 0.7;
+        }
+        .th-toggle:hover { color: var(--accent); opacity: 1; }
         .term-input input {
             flex: 1;
             background: var(--bg);
@@ -365,6 +389,7 @@
         let panelRefreshTimers = {};    // session -> interval id
         let sessionsData = {};          // session name -> latest data from SSE
         let inlineBuffers = {};         // session -> current inline typing buffer
+        let hideInputBar = {};          // session -> true to hide bottom input bar
 
         const maxPanels = { '1': 1, '2h': 2, '2v': 2, '4': 4 };
 
@@ -477,18 +502,22 @@
             container.innerHTML = visible.map(name => {
                 const s = sessionsData[name] || {};
                 const isFocused = name === activeTab;
+                const barHidden = hideInputBar[name] ? 'hidden' : '';
                 return `<div class="term-panel ${isFocused ? 'focused' : ''}" data-session="${name}" onclick="if(activeTab!=='${name}'){activeTab='${name}'; renderPanels();}">
                     <div class="term-header">
                         <span>
                             <span class="th-name">${esc(name)}</span>
                             <span class="th-state"> · ${s.state || '?'} · idle ${s.idle_seconds || 0}s</span>
                         </span>
-                        <span class="th-close" onclick="event.stopPropagation(); undockSession('${name}')">&times;</span>
+                        <span style="display:flex;gap:4px;align-items:center">
+                            <span class="th-toggle" onclick="event.stopPropagation(); toggleInputBar('${name}')" title="Toggle input bar">⌨</span>
+                            <span class="th-close" onclick="event.stopPropagation(); undockSession('${name}')">&times;</span>
+                        </span>
                     </div>
                     <div class="term-body" id="term-${name}" tabindex="0"
                          onkeydown="handleTermKey(event, '${name}')"
-                         onclick="event.stopPropagation(); this.focus()">Loading...</div>
-                    <div class="term-input" onclick="event.stopPropagation()">
+                         onclick="event.stopPropagation(); this.focus()">Loading...<div class="inline-prompt" id="prompt-${name}"><span class="prompt-symbol">$ </span><span class="prompt-text"></span><span class="prompt-cursor"></span></div></div>
+                    <div class="term-input ${barHidden}" id="inputbar-${name}" onclick="event.stopPropagation()">
                         <input type="text" id="input-${name}" placeholder="$ type command..."
                                onkeydown="if(event.key==='Enter') sendCmd('${name}')"
                                onfocus="event.stopPropagation()">
@@ -522,18 +551,20 @@
                 const el = document.getElementById(`term-${name}`);
                 if (el) {
                     const buf = inlineBuffers[name] || '';
-                    /* Build content: real output + inline cursor line */
                     const content = data.content || '(no content)';
-                    if (buf) {
-                        el.innerHTML = '';
-                        el.appendChild(document.createTextNode(content));
-                        const cursorLine = document.createElement('span');
-                        cursorLine.className = 'inline-input';
-                        cursorLine.textContent = buf;
-                        el.appendChild(cursorLine);
-                    } else {
-                        el.textContent = content;
-                    }
+                    const hasFocus = document.activeElement === el;
+
+                    /* Rebuild: output text + inline prompt */
+                    el.innerHTML = '';
+                    el.appendChild(document.createTextNode(content));
+
+                    /* Inline prompt — always present in DOM, shown via CSS :focus */
+                    const prompt = document.createElement('div');
+                    prompt.className = 'inline-prompt';
+                    prompt.id = `prompt-${name}`;
+                    prompt.innerHTML = `<span class="prompt-symbol">$ </span><span class="prompt-text">${esc(buf)}</span><span class="prompt-cursor"></span>`;
+                    el.appendChild(prompt);
+
                     el.scrollTop = el.scrollHeight;
                 }
             } catch (e) { /* ignore */ }
@@ -585,13 +616,13 @@
                 e.preventDefault();
                 if (!inlineBuffers[name]) return;
                 inlineBuffers[name] = inlineBuffers[name].slice(0, -1);
-                refreshPanel(name);
+                updateInlinePrompt(name);
                 return;
             }
             if (e.key === 'Escape') {
                 e.preventDefault();
                 inlineBuffers[name] = '';
-                refreshPanel(name);
+                updateInlinePrompt(name);
                 return;
             }
             if (e.key === 'Tab') {
@@ -609,18 +640,30 @@
             if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) {
                 e.preventDefault();
                 inlineBuffers[name] = (inlineBuffers[name] || '') + e.key;
-                // Update inline cursor immediately (no fetch needed)
+                updateInlinePrompt(name);
+            }
+        }
+
+        /* Update the inline prompt text immediately without a server fetch */
+        function updateInlinePrompt(name) {
+            const prompt = document.getElementById(`prompt-${name}`);
+            if (prompt) {
+                const textSpan = prompt.querySelector('.prompt-text');
+                if (textSpan) textSpan.textContent = inlineBuffers[name] || '';
+            }
+            const el = document.getElementById(`term-${name}`);
+            if (el) el.scrollTop = el.scrollHeight;
+        }
+
+        // ── Toggle input bar visibility ──────────
+        function toggleInputBar(name) {
+            hideInputBar[name] = !hideInputBar[name];
+            const bar = document.getElementById(`inputbar-${name}`);
+            if (bar) bar.classList.toggle('hidden', !!hideInputBar[name]);
+            // Auto-focus the terminal body when hiding bar (for inline typing)
+            if (hideInputBar[name]) {
                 const el = document.getElementById(`term-${name}`);
-                if (el) {
-                    let cursor = el.querySelector('.inline-input');
-                    if (!cursor) {
-                        cursor = document.createElement('span');
-                        cursor.className = 'inline-input';
-                        el.appendChild(cursor);
-                    }
-                    cursor.textContent = inlineBuffers[name];
-                    el.scrollTop = el.scrollHeight;
-                }
+                if (el) el.focus();
             }
         }
 

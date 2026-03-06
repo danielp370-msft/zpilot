@@ -1,12 +1,13 @@
 """Playwright browser tests for zpilot web dashboard.
 
 Requires:
-  - Web server running on localhost:8096
+  - Web server running (default: localhost:8097, override with ZPILOT_WEB_URL)
   - At least one Zellij session (demo-build, demo-copilot)
   - python3 -m playwright install chromium
 """
 
 import asyncio
+import os
 import re
 import pytest
 
@@ -16,7 +17,7 @@ pytest.importorskip("playwright")
 from playwright.async_api import async_playwright, expect
 
 
-WEB_URL = "http://localhost:8096"
+WEB_URL = os.environ.get("ZPILOT_WEB_URL", "http://localhost:8097")
 
 
 @pytest.fixture
@@ -280,7 +281,7 @@ class TestInlineTyping:
         await page.wait_for_timeout(500)
 
         # Should show inline-input cursor
-        cursor = page.locator(".inline-input")
+        cursor = page.locator(".prompt-text")
         count = await cursor.count()
         assert count >= 1, "No inline cursor appeared"
         text = await cursor.first.text_content()
@@ -306,7 +307,7 @@ class TestInlineTyping:
         await page.keyboard.press("Backspace")
         await page.wait_for_timeout(200)
 
-        cursor = page.locator(".inline-input")
+        cursor = page.locator(".prompt-text")
         if await cursor.count() > 0:
             text = await cursor.first.text_content()
             assert text == "abc", f"Expected 'abc', got '{text}'"
@@ -329,7 +330,7 @@ class TestInlineTyping:
         await page.wait_for_timeout(500)
 
         # After escape, cursor should be gone or empty
-        cursor = page.locator(".inline-input")
+        cursor = page.locator(".prompt-text")
         count = await cursor.count()
         if count > 0:
             text = await cursor.first.text_content()

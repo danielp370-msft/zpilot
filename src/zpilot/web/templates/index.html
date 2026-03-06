@@ -477,7 +477,7 @@
             container.innerHTML = visible.map(name => {
                 const s = sessionsData[name] || {};
                 const isFocused = name === activeTab;
-                return `<div class="term-panel ${isFocused ? 'focused' : ''}" data-session="${name}" onclick="activeTab='${name}'; renderPanels();">
+                return `<div class="term-panel ${isFocused ? 'focused' : ''}" data-session="${name}" onclick="if(activeTab!=='${name}'){activeTab='${name}'; renderPanels();}">
                     <div class="term-header">
                         <span>
                             <span class="th-name">${esc(name)}</span>
@@ -487,11 +487,12 @@
                     </div>
                     <div class="term-body" id="term-${name}" tabindex="0"
                          onkeydown="handleTermKey(event, '${name}')"
-                         onclick="this.focus()">Loading...</div>
-                    <div class="term-input">
+                         onclick="event.stopPropagation(); this.focus()">Loading...</div>
+                    <div class="term-input" onclick="event.stopPropagation()">
                         <input type="text" id="input-${name}" placeholder="$ type command..."
-                               onkeydown="if(event.key==='Enter') sendCmd('${name}')">
-                        <button onclick="sendCmd('${name}')">▶</button>
+                               onkeydown="if(event.key==='Enter') sendCmd('${name}')"
+                               onfocus="event.stopPropagation()">
+                        <button onclick="event.stopPropagation(); sendCmd('${name}')">▶</button>
                     </div>
                 </div>`;
             }).join('');

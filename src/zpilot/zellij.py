@@ -244,6 +244,72 @@ async def send_ctrl_c(session: str | None = None) -> None:
     await write_bytes(b"\x03", session)
 
 
+# Escape sequence map for named special keys
+SPECIAL_KEYS: dict[str, bytes] = {
+    "enter": b"\n",
+    "tab": b"\t",
+    "escape": b"\x1b",
+    "backspace": b"\x7f",
+    "ctrl_c": b"\x03",
+    "ctrl_d": b"\x04",
+    "ctrl_z": b"\x1a",
+    "ctrl_l": b"\x0c",
+    "ctrl_a": b"\x01",
+    "ctrl_e": b"\x05",
+    "ctrl_r": b"\x12",
+    "ctrl_u": b"\x15",
+    "ctrl_w": b"\x17",
+    "arrow_up": b"\x1b[A",
+    "arrow_down": b"\x1b[B",
+    "arrow_right": b"\x1b[C",
+    "arrow_left": b"\x1b[D",
+    "home": b"\x1b[H",
+    "end": b"\x1b[F",
+    "page_up": b"\x1b[5~",
+    "page_down": b"\x1b[6~",
+    "insert": b"\x1b[2~",
+    "delete": b"\x1b[3~",
+    "f1": b"\x1bOP",
+    "f2": b"\x1bOQ",
+    "f3": b"\x1bOR",
+    "f4": b"\x1bOS",
+    "f5": b"\x1b[15~",
+    "f6": b"\x1b[17~",
+    "f7": b"\x1b[18~",
+    "f8": b"\x1b[19~",
+    "f9": b"\x1b[20~",
+    "f10": b"\x1b[21~",
+    "f11": b"\x1b[23~",
+    "f12": b"\x1b[24~",
+}
+
+
+async def send_special_key(
+    key_name: str,
+    session: str | None = None,
+) -> bool:
+    """Send a named special key (arrow_up, ctrl_c, f1, etc.).
+
+    Returns True if key was recognized, False otherwise.
+    """
+    key_bytes = SPECIAL_KEYS.get(key_name.lower())
+    if key_bytes is None:
+        return False
+    # Prefer FIFO for speed
+    if session:
+        fifo = FIFO_DIR / f"{session}.fifo"
+        if fifo.exists():
+            try:
+                fd = os.open(str(fifo), os.O_WRONLY | os.O_NONBLOCK)
+                os.write(fd, key_bytes)
+                os.close(fd)
+                return True
+            except OSError:
+                pass
+    await write_bytes(key_bytes, session)
+    return True
+
+
 async def dump_pane(
     session: str | None = None,
     pane_name: str | None = None,

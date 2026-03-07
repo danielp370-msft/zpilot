@@ -265,3 +265,63 @@ class TestMcpToolsMocked:
             config, detector, event_bus,
         )
         assert detector.get_idle_seconds("test", "focused") < 2.0
+
+
+    @patch("zpilot.mcp_server.zellij")
+    async def test_send_keys_valid(self, mock_zellij, config, detector, event_bus):
+        mock_zellij.send_special_key = AsyncMock(return_value=True)
+        result = await _dispatch(
+            "send_keys",
+            {"session": "test", "keys": ["arrow_up", "enter"]},
+            config, detector, event_bus,
+        )
+        assert "2 key(s)" in result
+        assert "✓ arrow_up" in result
+        assert "✓ enter" in result
+        assert mock_zellij.send_special_key.call_count == 2
+
+    @patch("zpilot.mcp_server.zellij")
+    async def test_send_keys_invalid(self, mock_zellij, config, detector, event_bus):
+        mock_zellij.send_special_key = AsyncMock(return_value=False)
+        mock_zellij.SPECIAL_KEYS = {"enter": b"\n", "tab": b"\t"}
+        result = await _dispatch(
+            "send_keys",
+            {"session": "test", "keys": ["nonexistent_key"]},
+            config, detector, event_bus,
+        )
+        assert "✗ nonexistent_key" in result
+        assert "unknown" in result.lower()
+
+    @patch("zpilot.mcp_server.zellij")
+    async def test_send_keys_resets_idle(self, mock_zellij, config, detector, event_bus):
+        mock_zellij.send_special_key = AsyncMock(return_value=True)
+        import time
+        detector._last_change_time["test:focused"] = time.time() - 60
+        await _dispatch(
+            "send_keys",
+            {"session": "test", "keys": ["ctrl_c"]},
+            config, detector, event_bus,
+        )
+        assert detector.get_idle_seconds("test", "focused") < 2.0
+
+
+class TestWebEndpoints:
+    """Test the web API endpoints (unit-level with TestClient)."""
+
+    def test_keys_endpoint_exists(self):
+        """The /api/session/{name}/keys endpoint should be registered."""
+        from zpilot.web.app import app
+        routes = [r.path for r in app.routes]
+        assert "/api/session/{name}/keys" in routes
+
+    def test_raw_pane_endpoint_exists(self):
+        """The /api/pane/{session_name}/raw endpoint should be registered."""
+        from zpilot.web.app import app
+        routes = [r.path for r in app.routes]
+        assert "/api/pane/{session_name}/raw" in routes
+
+    def test_websocket_endpoint_exists(self):
+        """The /ws/terminal/{session_name} WebSocket endpoint should be registered."""
+        from zpilot.web.app import app
+        routes = [r.path for r in app.routes]
+        assert "/ws/terminal/{session_name}" in routes

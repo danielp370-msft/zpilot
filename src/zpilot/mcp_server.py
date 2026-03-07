@@ -259,6 +259,31 @@ def create_mcp_server(config: ZpilotConfig | None = None) -> Server:
                     "required": ["session"],
                 },
             ),
+            Tool(
+                name="send_keys",
+                description=(
+                    "Send special keys to a session (arrow keys, ctrl combos, function keys). "
+                    "Supported keys: enter, tab, escape, backspace, ctrl_c, ctrl_d, ctrl_z, ctrl_l, "
+                    "ctrl_a, ctrl_e, ctrl_r, ctrl_u, ctrl_w, arrow_up, arrow_down, arrow_left, "
+                    "arrow_right, home, end, page_up, page_down, insert, delete, f1-f12. "
+                    "Can send multiple keys in sequence."
+                ),
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "session": {
+                            "type": "string",
+                            "description": "Session name",
+                        },
+                        "keys": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "List of key names to send in order (e.g. ['arrow_up', 'enter'])",
+                        },
+                    },
+                    "required": ["session", "keys"],
+                },
+            ),
         ]
 
     # ── Tool implementations ────────────────────────────────────
@@ -461,6 +486,20 @@ async def _dispatch(
         header = f"Last {len(tail)} of {total} lines from {session}:\n"
         numbered = [f"{total - len(tail) + i + 1}: {line}" for i, line in enumerate(tail)]
         return header + "\n".join(numbered)
+
+    elif name == "send_keys":
+        session = args["session"]
+        keys = args["keys"]
+        results = []
+        for key_name in keys:
+            ok = await zellij.send_special_key(key_name, session=session)
+            if ok:
+                results.append(f"✓ {key_name}")
+            else:
+                available = ", ".join(sorted(zellij.SPECIAL_KEYS.keys()))
+                results.append(f"✗ {key_name} (unknown — available: {available})")
+        detector.record_input(session, "focused")
+        return f"Sent {len(keys)} key(s) to {session}:\n" + "\n".join(results)
 
     else:
         return f"Unknown tool: {name}"

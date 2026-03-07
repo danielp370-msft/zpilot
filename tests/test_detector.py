@@ -149,3 +149,25 @@ class TestInputIdleReset:
         detector.record_input("s1", "p1")
         assert detector.get_idle_seconds("s1", "p1") < 2.0
         assert detector.get_idle_seconds("s1", "p2") >= 25.0
+
+
+class TestSpecialKeys:
+    """Tests for zellij.SPECIAL_KEYS map."""
+
+    def test_all_keys_are_bytes(self):
+        from zpilot.zellij import SPECIAL_KEYS
+        for name, val in SPECIAL_KEYS.items():
+            assert isinstance(val, bytes), f"{name} should be bytes, got {type(val)}"
+            assert len(val) > 0, f"{name} should not be empty"
+
+    def test_expected_keys_present(self):
+        from zpilot.zellij import SPECIAL_KEYS
+        expected = ['enter', 'tab', 'escape', 'ctrl_c', 'ctrl_d',
+                    'arrow_up', 'arrow_down', 'arrow_left', 'arrow_right',
+                    'home', 'end', 'page_up', 'page_down', 'f1', 'f12']
+        for key in expected:
+            assert key in SPECIAL_KEYS, f"Missing key: {key}"
+
+    def test_arrow_up_escape_sequence(self):
+        from zpilot.zellij import SPECIAL_KEYS
+        assert SPECIAL_KEYS['arrow_up'] == b'\x1b[A'

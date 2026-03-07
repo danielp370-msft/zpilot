@@ -7,7 +7,7 @@ import json
 import time
 from pathlib import Path
 
-from fastapi import FastAPI, Form, Request
+from fastapi import FastAPI, Form, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -96,6 +96,105 @@ async def api_send_to_session(name: str, text: str = Form(...)):
     await zellij.send_enter(session=name)
     detector.record_input(name, "main")
     return {"status": "sent", "session": name, "text": text}
+
+
+@app.post("/api/session/{name}/keys")
+async def api_send_keys(name: str, keys: list[str]):
+    """Send special keys to a session."""
+    results = []
+    for key in keys:
+        ok = await zellij.send_special_key(key, session=name)
+        results.append({"key": key, "sent": ok})
+    detector.record_input(name, "main")
+    return {"status": "sent", "session": name, "results": results}
+
+
+@app.get("/api/pane/{session_name}/raw")
+async def api_pane_raw(session_name: str, pane_name: str = "main", lines: int = 80):
+    """Raw pane content with ANSI codes preserved (for xterm.js)."""
+    content = await zellij.dump_pane(session=session_name, pane_name=pane_name, tail_lines=lines)
+    return {"session": session_name, "content": content}
+
+
+@app.websocket("/ws/terminal/{session_name}")
+async def ws_terminal(websocket: WebSocket, session_name: str):
+    """WebSocket for real-time terminal I/O.
+
+    Server → Client: raw terminal output (ANSI preserved)
+    Client → Server: keystrokes (raw text or JSON {type: 'key', key: 'arrow_up'})
+    """
+    await websocket.accept()
+    last_hash = ""
+    last_full_content = ""
+
+    try:
+        # Send initial content
+        content = await zellij.dump_pane(session=session_name, pane_name="main", tail_lines=200)
+        if content:
+            await websocket.send_json({"type": "output", "data": content})
+            import hashlib
+            last_hash = hashlib.md5(content.encode()).hexdigest()
+            last_full_content = content
+
+        async def send_updates():
+            """Poll for terminal changes and push to client."""
+            nonlocal last_hash, last_full_content
+            while True:
+                await asyncio.sleep(0.3)  # 300ms polling
+                try:
+                    content = await zellij.dump_pane(
+                        session=session_name, pane_name="main", tail_lines=200
+                    )
+                    if not content:
+                        continue
+                    import hashlib
+                    h = hashlib.md5(content.encode()).hexdigest()
+                    if h != last_hash:
+                        # Send incremental: if new content starts with old, send only the delta
+                        if last_full_content and content.startswith(last_full_content):
+                            delta = content[len(last_full_content):]
+                            if delta:
+                                await websocket.send_json({"type": "append", "data": delta})
+                        else:
+                            await websocket.send_json({"type": "output", "data": content})
+                        last_hash = h
+                        last_full_content = content
+                        # Update detector with fresh content
+                        clean = _strip_ansi(content)
+                        detector.detect(session_name, "main", clean)
+                except Exception:
+                    break
+
+        # Run output streaming in background
+        output_task = asyncio.create_task(send_updates())
+
+        try:
+            while True:
+                msg = await websocket.receive_text()
+                try:
+                    data = json.loads(msg)
+                    if data.get("type") == "key":
+                        # Named special key
+                        await zellij.send_special_key(data["key"], session=session_name)
+                    elif data.get("type") == "resize":
+                        pass  # Could forward resize to Zellij
+                    else:
+                        # Raw text input
+                        text = data.get("data", "")
+                        if text:
+                            await zellij.write_to_pane(text, session=session_name)
+                except (json.JSONDecodeError, KeyError):
+                    # Plain text — send directly as keystrokes
+                    if msg:
+                        await zellij.write_to_pane(msg, session=session_name)
+                detector.record_input(session_name, "main")
+        finally:
+            output_task.cancel()
+
+    except WebSocketDisconnect:
+        pass
+    except Exception:
+        pass
 
 
 import re as _re

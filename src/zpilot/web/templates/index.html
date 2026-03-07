@@ -4,6 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>zpilot — Mission Control</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/css/xterm.min.css">
     <style>
         :root {
             --bg: #0d1117;
@@ -230,44 +231,15 @@
         .term-header .th-close:hover { color: var(--red); }
         .term-body {
             background: var(--term-bg);
-            color: #c8d3de;
-            padding: 6px 8px;
-            font-size: 0.75rem;
-            line-height: 1.45;
-            overflow-y: auto;
             flex: 1;
-            white-space: pre-wrap;
-            word-break: break-all;
             min-height: 0;
-            cursor: text;
-            outline: none;
+            overflow: hidden;
+            position: relative;
         }
-        .term-body:focus { box-shadow: inset 0 0 0 1px var(--accent); }
-        .term-body .inline-prompt {
-            display: none;
-            margin-top: 2px;
-            color: var(--green);
-        }
-        .term-body:focus .inline-prompt { display: block; }
-        .term-body .inline-prompt .prompt-symbol { color: var(--accent); }
-        .term-body .inline-prompt .prompt-text { color: #e0e0e0; }
-        .term-body .inline-prompt .prompt-cursor {
-            display: inline-block;
-            width: 7px;
-            height: 1.1em;
-            background: var(--green);
-            vertical-align: text-bottom;
-            animation: cursorblink 1s step-end infinite;
-            margin-left: 1px;
-        }
-        @keyframes cursorblink { 50% { opacity: 0; } }
-        /* Legacy inline-input kept for compat */
-        .term-body .inline-input {
-            color: var(--green);
-            border-right: 2px solid var(--green);
-            animation: cursorblink 1s step-end infinite;
-            padding-right: 1px;
-        }
+        .term-body .xterm { height: 100%; }
+        .term-body:focus-within { box-shadow: inset 0 0 0 1px var(--accent); }
+        /* Hide inline prompt — xterm.js handles everything now */
+        .term-body .inline-prompt { display: none; }
         .term-input {
             display: flex;
             border-top: 1px solid var(--border);
@@ -381,15 +353,20 @@
         </div>
     </div>
 
+    <script src="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/lib/xterm.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.10.0/lib/addon-fit.min.js"></script>
     <script>
         // ── State ──────────────────────────────────
         let dockedSessions = [];       // ordered list of docked session names
         let activeTab = null;           // name of focused tab
         let currentLayout = '2h';       // 1, 2h, 2v, 4
-        let panelRefreshTimers = {};    // session -> interval id
         let sessionsData = {};          // session name -> latest data from SSE
-        let inlineBuffers = {};         // session -> current inline typing buffer
         let hideInputBar = {};          // session -> true to hide bottom input bar
+
+        // xterm.js instances and WebSocket connections
+        let terminals = {};             // session -> Terminal instance
+        let termSockets = {};           // session -> WebSocket
+        let termFitAddons = {};         // session -> FitAddon
 
         const maxPanels = { '1': 1, '2h': 2, '2v': 2, '4': 4 };
 
@@ -435,11 +412,9 @@
             if (!dockedSessions.includes(name)) {
                 const max = maxPanels[currentLayout];
                 if (dockedSessions.length >= max) {
-                    // Replace the last panel
                     undockSession(dockedSessions[dockedSessions.length - 1], true);
                 }
                 dockedSessions.push(name);
-                startPanelRefresh(name);
             }
             activeTab = name;
             renderPanels();
@@ -447,7 +422,7 @@
 
         function undockSession(name, quiet) {
             dockedSessions = dockedSessions.filter(n => n !== name);
-            if (panelRefreshTimers[name]) { clearInterval(panelRefreshTimers[name]); delete panelRefreshTimers[name]; }
+            destroyTerminal(name);
             if (activeTab === name) activeTab = dockedSessions[0] || null;
             if (!quiet) renderPanels();
         }
@@ -457,12 +432,130 @@
             currentLayout = layout;
             document.querySelectorAll('.layout-btns button').forEach(b => b.classList.remove('active'));
             document.querySelector(`.layout-btns button[onclick="setLayout('${layout}')"]`).classList.add('active');
-            // Trim docked if exceeds new layout max
             const max = maxPanels[layout];
             while (dockedSessions.length > max) {
                 undockSession(dockedSessions[dockedSessions.length - 1], true);
             }
             renderPanels();
+        }
+
+        // ── xterm.js Terminal Management ───────────
+        function createTerminal(name) {
+            if (terminals[name]) return terminals[name];
+
+            const term = new Terminal({
+                theme: {
+                    background: '#010409',
+                    foreground: '#c8d3de',
+                    cursor: '#3fb950',
+                    cursorAccent: '#010409',
+                    selectionBackground: 'rgba(88,166,255,0.3)',
+                    black: '#484f58',
+                    red: '#ff7b72',
+                    green: '#3fb950',
+                    yellow: '#d29922',
+                    blue: '#58a6ff',
+                    magenta: '#bc8cff',
+                    cyan: '#39d353',
+                    white: '#b1bac4',
+                    brightBlack: '#6e7681',
+                    brightRed: '#ffa198',
+                    brightGreen: '#56d364',
+                    brightYellow: '#e3b341',
+                    brightBlue: '#79c0ff',
+                    brightMagenta: '#d2a8ff',
+                    brightCyan: '#56d364',
+                    brightWhite: '#f0f6fc',
+                },
+                fontFamily: "'SF Mono', 'Cascadia Code', 'Fira Code', monospace",
+                fontSize: 13,
+                lineHeight: 1.2,
+                cursorBlink: true,
+                cursorStyle: 'block',
+                scrollback: 5000,
+                allowProposedApi: true,
+            });
+
+            const fitAddon = new FitAddon.FitAddon();
+            term.loadAddon(fitAddon);
+
+            terminals[name] = term;
+            termFitAddons[name] = fitAddon;
+
+            // Forward keystrokes to WebSocket
+            term.onData((data) => {
+                const ws = termSockets[name];
+                if (ws && ws.readyState === WebSocket.OPEN) {
+                    ws.send(JSON.stringify({ type: 'input', data: data }));
+                }
+            });
+
+            return term;
+        }
+
+        function connectTerminalWS(name) {
+            if (termSockets[name]) {
+                if (termSockets[name].readyState === WebSocket.OPEN ||
+                    termSockets[name].readyState === WebSocket.CONNECTING) return;
+            }
+
+            const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+            const ws = new WebSocket(`${proto}//${location.host}/ws/terminal/${name}`);
+            termSockets[name] = ws;
+
+            ws.onopen = () => {
+                console.log(`[zpilot] WebSocket connected: ${name}`);
+            };
+
+            ws.onmessage = (e) => {
+                const term = terminals[name];
+                if (!term) return;
+                try {
+                    const msg = JSON.parse(e.data);
+                    if (msg.type === 'output') {
+                        term.clear();
+                        term.write(msg.data);
+                    } else if (msg.type === 'append') {
+                        term.write(msg.data);
+                    }
+                } catch (err) {
+                    // Plain text fallback
+                    term.write(e.data);
+                }
+            };
+
+            ws.onclose = () => {
+                console.log(`[zpilot] WebSocket closed: ${name}`);
+                // Auto-reconnect after 3s if still docked
+                setTimeout(() => {
+                    if (dockedSessions.includes(name)) connectTerminalWS(name);
+                }, 3000);
+            };
+
+            ws.onerror = (e) => {
+                console.error(`[zpilot] WebSocket error: ${name}`, e);
+            };
+        }
+
+        function destroyTerminal(name) {
+            if (termSockets[name]) {
+                termSockets[name].close();
+                delete termSockets[name];
+            }
+            if (terminals[name]) {
+                terminals[name].dispose();
+                delete terminals[name];
+            }
+            if (termFitAddons[name]) {
+                delete termFitAddons[name];
+            }
+        }
+
+        function fitTerminal(name) {
+            const fitAddon = termFitAddons[name];
+            if (fitAddon) {
+                try { fitAddon.fit(); } catch(e) {}
+            }
         }
 
         // ── Render panels ──────────────────────────
@@ -491,7 +584,6 @@
             }
 
             const max = maxPanels[currentLayout];
-            // Show up to max panels; for layout-1, only show active tab
             let visible;
             if (currentLayout === '1') {
                 visible = activeTab ? [activeTab] : [dockedSessions[0]];
@@ -514,9 +606,7 @@
                             <span class="th-close" onclick="event.stopPropagation(); undockSession('${name}')">&times;</span>
                         </span>
                     </div>
-                    <div class="term-body" id="term-${name}" tabindex="0"
-                         onkeydown="handleTermKey(event, '${name}')"
-                         onclick="event.stopPropagation(); this.focus()">Loading...<div class="inline-prompt" id="prompt-${name}"><span class="prompt-symbol">$ </span><span class="prompt-text"></span><span class="prompt-cursor"></span></div></div>
+                    <div class="term-body" id="term-${name}"></div>
                     <div class="term-input ${barHidden}" id="inputbar-${name}" onclick="event.stopPropagation()">
                         <input type="text" id="input-${name}" placeholder="$ type command..."
                                onkeydown="if(event.key==='Enter') sendCmd('${name}')"
@@ -534,47 +624,23 @@
                 </div></div>`;
             }
 
-            // Load content for visible panels
-            visible.forEach(name => refreshPanel(name));
+            // Attach xterm.js to each visible panel
+            visible.forEach(name => {
+                const el = document.getElementById(`term-${name}`);
+                if (!el) return;
+
+                const term = createTerminal(name);
+                if (!term.element || !el.contains(term.element)) {
+                    term.open(el);
+                    setTimeout(() => fitTerminal(name), 50);
+                }
+                connectTerminalWS(name);
+            });
 
             // Highlight sidebar items
             document.querySelectorAll('.session-item').forEach(el => {
                 el.classList.toggle('docked', dockedSessions.includes(el.dataset.session));
             });
-        }
-
-        // ── Panel content refresh ──────────────────
-        async function refreshPanel(name) {
-            try {
-                const resp = await fetch(`/api/pane/${name}`);
-                const data = await resp.json();
-                const el = document.getElementById(`term-${name}`);
-                if (el) {
-                    const buf = inlineBuffers[name] || '';
-                    const content = data.content || '(no content)';
-                    const hasFocus = document.activeElement === el;
-
-                    /* Rebuild: output text + inline prompt */
-                    el.innerHTML = '';
-                    el.appendChild(document.createTextNode(content));
-
-                    /* Inline prompt — always present in DOM, shown via CSS :focus */
-                    const prompt = document.createElement('div');
-                    prompt.className = 'inline-prompt';
-                    prompt.id = `prompt-${name}`;
-                    prompt.innerHTML = `<span class="prompt-symbol">$ </span><span class="prompt-text">${esc(buf)}</span><span class="prompt-cursor"></span>`;
-                    el.appendChild(prompt);
-
-                    el.scrollTop = el.scrollHeight;
-                }
-            } catch (e) { /* ignore */ }
-        }
-
-        function startPanelRefresh(name) {
-            if (panelRefreshTimers[name]) return;
-            panelRefreshTimers[name] = setInterval(() => {
-                if (document.getElementById(`term-${name}`)) refreshPanel(name);
-            }, 2500);
         }
 
         function updateTabDots() {
@@ -587,83 +653,14 @@
             });
         }
 
-        // ── Inline terminal typing (type at the prompt) ──
-        function handleTermKey(e, name) {
-            if (e.ctrlKey && e.key === 'c') {
-                // Ctrl+C → send interrupt
-                e.preventDefault();
-                fetch(`/api/session/${name}/send`, {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/x-www-form-urlencoded'},
-                    body: `text=${encodeURIComponent('\x03')}`
-                });
-                inlineBuffers[name] = '';
-                refreshPanel(name);
-                return;
-            }
-            if (e.key === 'Enter') {
-                e.preventDefault();
-                const text = inlineBuffers[name] || '';
-                inlineBuffers[name] = '';
-                fetch(`/api/session/${name}/send`, {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/x-www-form-urlencoded'},
-                    body: `text=${encodeURIComponent(text)}`
-                }).then(() => setTimeout(() => refreshPanel(name), 800));
-                return;
-            }
-            if (e.key === 'Backspace') {
-                e.preventDefault();
-                if (!inlineBuffers[name]) return;
-                inlineBuffers[name] = inlineBuffers[name].slice(0, -1);
-                updateInlinePrompt(name);
-                return;
-            }
-            if (e.key === 'Escape') {
-                e.preventDefault();
-                inlineBuffers[name] = '';
-                updateInlinePrompt(name);
-                return;
-            }
-            if (e.key === 'Tab') {
-                e.preventDefault();
-                inlineBuffers[name] = (inlineBuffers[name] || '') + '\t';
-                // Send tab character for shell completion
-                fetch(`/api/session/${name}/send`, {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/x-www-form-urlencoded'},
-                    body: `text=${encodeURIComponent('\t')}`
-                }).then(() => { inlineBuffers[name] = ''; setTimeout(() => refreshPanel(name), 500); });
-                return;
-            }
-            // Regular character
-            if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) {
-                e.preventDefault();
-                inlineBuffers[name] = (inlineBuffers[name] || '') + e.key;
-                updateInlinePrompt(name);
-            }
-        }
-
-        /* Update the inline prompt text immediately without a server fetch */
-        function updateInlinePrompt(name) {
-            const prompt = document.getElementById(`prompt-${name}`);
-            if (prompt) {
-                const textSpan = prompt.querySelector('.prompt-text');
-                if (textSpan) textSpan.textContent = inlineBuffers[name] || '';
-            }
-            const el = document.getElementById(`term-${name}`);
-            if (el) el.scrollTop = el.scrollHeight;
-        }
-
         // ── Toggle input bar visibility ──────────
         function toggleInputBar(name) {
             hideInputBar[name] = !hideInputBar[name];
             const bar = document.getElementById(`inputbar-${name}`);
             if (bar) bar.classList.toggle('hidden', !!hideInputBar[name]);
-            // Auto-focus the terminal body when hiding bar (for inline typing)
-            if (hideInputBar[name]) {
-                const el = document.getElementById(`term-${name}`);
-                if (el) el.focus();
+            // Focus the xterm terminal when hiding bar
+            if (hideInputBar[name] && terminals[name]) {
+                terminals[name].focus();
             }
         }
 
@@ -680,7 +677,6 @@
                     headers: {'Content-Type': 'application/x-www-form-urlencoded'},
                     body: `text=${encodeURIComponent(text)}`
                 });
-                setTimeout(() => refreshPanel(name), 800);
             } catch (e) { console.error('Send failed:', e); }
         }
 
@@ -724,9 +720,9 @@
             if (ts) el.textContent = new Date(ts * 1000).toLocaleTimeString();
         });
 
-        // Keyboard: Escape to undock focused panel
-        document.addEventListener('keydown', (e) => {
-            if (e.key === 'Escape' && activeTab) { undockSession(activeTab); }
+        // Global resize handler — fit all visible terminals
+        window.addEventListener('resize', () => {
+            dockedSessions.forEach(name => fitTerminal(name));
         });
 
         // Auto-dock first two sessions on load
@@ -734,7 +730,6 @@
         initialSessions.slice(0, maxPanels[currentLayout]).forEach(s => {
             dockedSessions.push(s.name);
             sessionsData[s.name] = s;
-            startPanelRefresh(s.name);
         });
         if (dockedSessions.length > 0) activeTab = dockedSessions[0];
         renderPanels();

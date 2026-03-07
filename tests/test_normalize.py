@@ -21,21 +21,21 @@ class TestNormalizeForXterm:
         assert "red" in result
         assert "bold green" in result
 
-    def test_strips_cursor_positioning(self):
-        """CSI cursor movement (A, B, C, D, K) should be stripped."""
+    def test_preserves_cursor_for_xterm(self):
+        """CSI cursor movement (A, B, C, D, K, H) preserved for xterm.js rendering."""
         text = "\x1b[5Aup\x1b[3Bdown\x1b[2Cright\x1b[1Dleft\x1b[Kcleared"
         result = _normalize_for_xterm(text)
-        assert "\x1b[5A" not in result
-        assert "\x1b[3B" not in result
+        assert "\x1b[5A" in result   # cursor up preserved
+        assert "\x1b[K" in result    # erase line preserved
         assert "up" in result
         assert "down" in result
         assert "cleared" in result
 
-    def test_strips_cursor_home(self):
-        """Cursor home (H) should be stripped."""
+    def test_preserves_cursor_home(self):
+        """Cursor home (H) preserved for xterm.js."""
         text = "\x1b[5;10Hplaced here"
         result = _normalize_for_xterm(text)
-        assert "\x1b[5;10H" not in result
+        assert "\x1b[5;10H" in result
         assert "placed here" in result
 
     def test_converts_lf_to_crlf(self):
@@ -96,22 +96,38 @@ class TestNormalizeForXterm:
         assert result == "hello world"
 
     def test_mixed_sgr_and_cursor(self):
-        """SGR kept, cursor stripped, in interleaved sequence."""
+        """SGR kept, cursor kept, ?-prefixed modes stripped."""
         text = "\x1b[32m\x1b[2;1Hgreen text\x1b[0m\x1b[10A"
         result = _normalize_for_xterm(text)
-        assert "\x1b[32m" in result  # SGR kept
-        assert "\x1b[0m" in result   # SGR kept
-        assert "\x1b[2;1H" not in result  # cursor stripped
-        assert "\x1b[10A" not in result   # cursor stripped
+        assert "\x1b[32m" in result    # SGR kept
+        assert "\x1b[0m" in result     # SGR kept
+        assert "\x1b[2;1H" in result   # cursor preserved for xterm
+        assert "\x1b[10A" in result    # cursor preserved for xterm
         assert "green text" in result
 
+    def test_strips_mode_sequences(self):
+        """?-prefixed mode set/reset sequences should be stripped."""
+        text = "\x1b[?2004hvisible\x1b[?2004l\x1b[?25lhidden cursor"
+        result = _normalize_for_xterm(text)
+        assert "\x1b[?2004h" not in result
+        assert "\x1b[?25l" not in result
+        assert "visible" in result
+        assert "hidden cursor" in result
+
     def test_control_chars_stripped(self):
-        """Non-printable control chars removed (except \\n, \\t, \\r, ESC)."""
+        """Non-printable control chars removed (except \\b, \\n, \\t, \\r, ESC)."""
         text = "hello\x01\x02\x03world"
         result = _normalize_for_xterm(text)
         assert "\x01" not in result
         assert "\x02" not in result
         assert "helloworld" in result
+
+    def test_preserves_backspace(self):
+        """Backspace (\\x08) preserved for xterm.js cursor editing."""
+        text = "helloXX\x08\x1b[K\x08\x1b[K"
+        result = _normalize_for_xterm(text)
+        assert "\x08" in result
+        assert "\x1b[K" in result
 
     def test_preserves_tab(self):
         text = "col1\tcol2\tcol3"

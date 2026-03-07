@@ -94,6 +94,7 @@ async def api_send_to_session(name: str, text: str = Form(...)):
     """Send text to a session's focused pane."""
     await zellij.write_to_pane(text, session=name)
     await zellij.send_enter(session=name)
+    detector.record_input(name, "main")
     return {"status": "sent", "session": name, "text": text}
 
 

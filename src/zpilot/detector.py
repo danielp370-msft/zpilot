@@ -21,6 +21,7 @@ class PaneDetector:
         self._last_hash: dict[str, str] = {}
         self._last_change_time: dict[str, float] = {}
         self._last_state: dict[str, PaneState] = {}
+        self._last_input_time: dict[str, float] = {}  # track user input activity
 
     def _key(self, session: str, pane: str) -> str:
         return f"{session}:{pane}"
@@ -51,7 +52,9 @@ class PaneDetector:
             self._last_change_time[key] = now
 
         last_change = self._last_change_time.get(key, now)
-        idle_seconds = now - last_change
+        last_input = self._last_input_time.get(key, 0)
+        last_activity = max(last_change, last_input)
+        idle_seconds = now - last_activity
 
         # Get the last few non-empty lines for pattern matching
         lines = [l for l in content.splitlines() if l.strip()]
@@ -100,10 +103,17 @@ class PaneDetector:
         return PaneState.ACTIVE
 
     def get_idle_seconds(self, session: str, pane: str) -> float:
-        """Get how long a pane has been idle."""
+        """Get how long a pane has been idle (since last output OR input)."""
         key = self._key(session, pane)
-        last_change = self._last_change_time.get(key, time.time())
-        return time.time() - last_change
+        now = time.time()
+        last_change = self._last_change_time.get(key, now)
+        last_input = self._last_input_time.get(key, 0)
+        return now - max(last_change, last_input)
+
+    def record_input(self, session: str, pane: str = "focused") -> None:
+        """Record that user/AI sent input to this pane (resets idle timer)."""
+        key = self._key(session, pane)
+        self._last_input_time[key] = time.time()
 
     def get_last_state(self, session: str, pane: str) -> PaneState:
         """Get the last detected state for a pane."""

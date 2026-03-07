@@ -217,6 +217,48 @@ def create_mcp_server(config: ZpilotConfig | None = None) -> Server:
                     },
                 },
             ),
+            Tool(
+                name="search_pane",
+                description="Search a session's full scrollback buffer for a pattern (grep-style). Returns matching lines with line numbers.",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "session": {
+                            "type": "string",
+                            "description": "Session name",
+                        },
+                        "pattern": {
+                            "type": "string",
+                            "description": "Text or regex pattern to search for",
+                        },
+                        "context": {
+                            "type": "integer",
+                            "description": "Lines of context around each match (default 2)",
+                            "default": 2,
+                        },
+                    },
+                    "required": ["session", "pattern"],
+                },
+            ),
+            Tool(
+                name="get_output_history",
+                description="Get the last N lines from a session's scrollback. Use for reviewing what happened recently without reading the entire buffer.",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "session": {
+                            "type": "string",
+                            "description": "Session name",
+                        },
+                        "lines": {
+                            "type": "integer",
+                            "description": "Number of lines to return from end of scrollback (default 50)",
+                            "default": 50,
+                        },
+                    },
+                    "required": ["session"],
+                },
+            ),
         ]
 
     # ── Tool implementations ────────────────────────────────────
@@ -280,12 +322,16 @@ async def _dispatch(
 
     elif name == "write_to_pane":
         await zellij.write_to_pane(args["text"], session=args.get("session"))
+        sess = args.get("session", "current")
+        detector.record_input(sess, "focused")
         return f"Sent {len(args['text'])} chars to pane"
 
     elif name == "run_in_pane":
         await zellij.run_command_in_pane(
             args["command"], session=args.get("session")
         )
+        sess = args.get("session", "current")
+        detector.record_input(sess, "focused")
         return f"Executed: {args['command']}"
 
     elif name == "launch_copilot":
@@ -372,6 +418,49 @@ async def _dispatch(
                 f"{ev.old_state or '?'} → {ev.new_state}  {ev.details or ''}"
             )
         return "Recent events:\n" + "\n".join(lines)
+
+    elif name == "search_pane":
+        import re
+        session = args["session"]
+        pattern = args["pattern"]
+        ctx = args.get("context", 2)
+        # Get full scrollback
+        content = await zellij.dump_pane(session=session, full=True)
+        if not content:
+            return "Pane is empty."
+        all_lines = content.splitlines()
+        try:
+            regex = re.compile(pattern, re.IGNORECASE)
+        except re.error:
+            # Fall back to literal search
+            regex = re.compile(re.escape(pattern), re.IGNORECASE)
+        matches = []
+        for i, line in enumerate(all_lines):
+            if regex.search(line):
+                start = max(0, i - ctx)
+                end = min(len(all_lines), i + ctx + 1)
+                snippet = []
+                for j in range(start, end):
+                    marker = ">>>" if j == i else "   "
+                    snippet.append(f"{marker} {j+1}: {all_lines[j]}")
+                matches.append("\n".join(snippet))
+        if not matches:
+            return f"No matches for '{pattern}' in {session} scrollback ({len(all_lines)} lines searched)."
+        header = f"Found {len(matches)} match(es) in {session} ({len(all_lines)} lines):\n"
+        return header + "\n---\n".join(matches[:30])  # cap at 30 matches
+
+    elif name == "get_output_history":
+        session = args["session"]
+        num_lines = args.get("lines", 50)
+        content = await zellij.dump_pane(session=session, full=True)
+        if not content:
+            return "(empty pane)"
+        all_lines = content.strip().splitlines()
+        tail = all_lines[-num_lines:]
+        total = len(all_lines)
+        header = f"Last {len(tail)} of {total} lines from {session}:\n"
+        numbered = [f"{total - len(tail) + i + 1}: {line}" for i, line in enumerate(tail)]
+        return header + "\n".join(numbered)
 
     else:
         return f"Unknown tool: {name}"

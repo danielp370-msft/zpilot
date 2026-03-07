@@ -110,3 +110,42 @@ class TestLastState:
         assert detector.get_last_state("s1", "p1") == PaneState.UNKNOWN
         detector.detect("s1", "p1", "Error: bad\n")
         assert detector.get_last_state("s1", "p1") == PaneState.ERROR
+
+
+class TestInputIdleReset:
+    """Tests for idle timer resetting on user input."""
+
+    def test_record_input_resets_idle(self, detector):
+        # Simulate pane with old output (idle for 30s)
+        detector.detect("s1", "p1", "old output", now=time.time() - 30)
+        idle_before = detector.get_idle_seconds("s1", "p1")
+        assert idle_before >= 25.0  # should be ~30s idle
+
+        # Record user input
+        detector.record_input("s1", "p1")
+        idle_after = detector.get_idle_seconds("s1", "p1")
+        assert idle_after < 2.0  # should be near 0
+
+    def test_input_affects_detect_idle_calc(self, detector):
+        now = time.time()
+        # Detect with old content (no change)
+        detector.detect("s1", "p1", "same", now=now - 20)
+        detector.detect("s1", "p1", "same", now=now - 10)
+        # Without input, idle is ~10s
+        idle_no_input = detector.get_idle_seconds("s1", "p1")
+        assert idle_no_input >= 9.0
+
+        # Record input — idle should reset
+        detector.record_input("s1", "p1")
+        state = detector.detect("s1", "p1", "same", now=now)
+        # With fresh input, idle should be near 0, so state should be ACTIVE
+        assert state == PaneState.ACTIVE
+
+    def test_record_input_different_panes(self, detector):
+        detector.detect("s1", "p1", "content", now=time.time() - 30)
+        detector.detect("s1", "p2", "content", now=time.time() - 30)
+
+        # Only reset p1
+        detector.record_input("s1", "p1")
+        assert detector.get_idle_seconds("s1", "p1") < 2.0
+        assert detector.get_idle_seconds("s1", "p2") >= 25.0

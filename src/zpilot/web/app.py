@@ -182,14 +182,14 @@ async def ws_terminal(websocket: WebSocket, session_name: str):
                     elif data.get("type") == "resize":
                         pass  # Could forward resize to Zellij
                     else:
-                        # Raw text input
+                        # Raw terminal input (may contain control chars)
                         text = data.get("data", "")
                         if text:
-                            await zellij.write_to_pane(text, session=session_name)
+                            await zellij.write_raw_input(text, session=session_name)
                 except (json.JSONDecodeError, KeyError):
-                    # Plain text — send directly as keystrokes
+                    # Plain text — send directly as raw input
                     if msg:
-                        await zellij.write_to_pane(msg, session=session_name)
+                        await zellij.write_raw_input(msg, session=session_name)
                 detector.record_input(session_name, "main")
         finally:
             output_task.cancel()
@@ -248,11 +248,15 @@ def _normalize_for_xterm(text: str) -> str:
     # Strip charset switches and keypad mode
     text = _re.sub(r'\x1b[()][0-9A-B]', '', text)
     text = _re.sub(r'\x1b[=>]', '', text)
-    # Strip CSI sequences EXCEPT SGR (color: ends with 'm')
-    # CSI = \x1b[ followed by params and a letter
-    text = _re.sub(r'\x1b\[[0-9;?]*[a-ln-zA-LN-Z]', '', text)  # keep 'm', strip others
-    # Strip non-printable control chars except \n, \t, \r, and ESC (for SGR)
-    text = _re.sub(r'[\x00-\x08\x0e-\x1a\x1c-\x1f]', '', text)
+    # Strip CSI sequences EXCEPT those xterm.js needs for rendering:
+    #   m = SGR (colors), K = erase in line, J = erase in display,
+    #   H = cursor position, A/B/C/D = cursor movement,
+    #   @ = insert chars, P = delete chars, L = insert lines, M = delete lines
+    # Only strip: ?-prefixed modes, scroll regions (r), and other rare CSI
+    text = _re.sub(r'\x1b\[\?[0-9;]*[a-zA-Z]', '', text)  # mode set/reset (?-prefixed)
+    text = _re.sub(r'\x1b\[[0-9;]*r', '', text)             # scroll region
+    # Strip non-printable control chars except \b, \n, \t, \r, \x1b, \x7f
+    text = _re.sub(r'[\x00-\x07\x0e-\x1a\x1c-\x1f]', '', text)
     # Collapse excessive blank lines
     text = _re.sub(r'\n{3,}', '\n\n', text)
     # Convert \n to \r\n for xterm.js (needs CR to return to column 0)

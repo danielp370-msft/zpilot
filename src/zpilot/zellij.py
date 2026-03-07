@@ -214,6 +214,35 @@ async def write_to_pane(
     await _action(session, ["write-chars", text])
 
 
+async def write_raw_input(
+    text: str,
+    session: str | None = None,
+) -> None:
+    """Write raw terminal input (from xterm.js) including control chars.
+
+    Unlike write_to_pane, this properly handles backspace, arrow keys, and
+    other escape sequences by using FIFO (raw bytes) or per-byte write fallback.
+    """
+    data = text.encode("utf-8", errors="replace")
+    # FIFO path: handles everything (control chars, escape sequences, printable)
+    if session:
+        fifo = FIFO_DIR / f"{session}.fifo"
+        if fifo.exists():
+            try:
+                fd = os.open(str(fifo), os.O_WRONLY | os.O_NONBLOCK)
+                os.write(fd, data)
+                os.close(fd)
+                return
+            except OSError:
+                pass
+    # Fallback: check if data contains control chars or escape sequences
+    has_control = any(b < 0x20 or b == 0x7f for b in data) or b'\x1b' in data
+    if has_control:
+        await write_bytes(data, session)
+    else:
+        await _action(session, ["write-chars", text])
+
+
 async def write_bytes(
     data: bytes,
     session: str | None = None,

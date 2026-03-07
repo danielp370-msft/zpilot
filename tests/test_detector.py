@@ -171,3 +171,90 @@ class TestSpecialKeys:
     def test_arrow_up_escape_sequence(self):
         from zpilot.zellij import SPECIAL_KEYS
         assert SPECIAL_KEYS['arrow_up'] == b'\x1b[A'
+
+    def test_ctrl_keys_single_byte(self):
+        from zpilot.zellij import SPECIAL_KEYS
+        assert SPECIAL_KEYS['ctrl_c'] == b'\x03'
+        assert SPECIAL_KEYS['ctrl_d'] == b'\x04'
+        assert SPECIAL_KEYS['ctrl_z'] == b'\x1a'
+        assert SPECIAL_KEYS['ctrl_l'] == b'\x0c'
+
+    def test_function_keys_sequences(self):
+        from zpilot.zellij import SPECIAL_KEYS
+        assert SPECIAL_KEYS['f1'] == b'\x1bOP'
+        assert SPECIAL_KEYS['f5'] == b'\x1b[15~'
+        assert SPECIAL_KEYS['f12'] == b'\x1b[24~'
+
+    def test_navigation_keys(self):
+        from zpilot.zellij import SPECIAL_KEYS
+        assert SPECIAL_KEYS['home'] == b'\x1b[H'
+        assert SPECIAL_KEYS['end'] == b'\x1b[F'
+        assert SPECIAL_KEYS['page_up'] == b'\x1b[5~'
+        assert SPECIAL_KEYS['page_down'] == b'\x1b[6~'
+        assert SPECIAL_KEYS['insert'] == b'\x1b[2~'
+        assert SPECIAL_KEYS['delete'] == b'\x1b[3~'
+
+    def test_key_count_minimum(self):
+        """Should have at least 30 keys defined."""
+        from zpilot.zellij import SPECIAL_KEYS
+        assert len(SPECIAL_KEYS) >= 30
+
+
+class TestDetectorMultiPane:
+    """Test detector with multiple panes and sessions."""
+
+    def test_independent_sessions(self, detector):
+        """Different sessions should track state independently."""
+        now = time.time()
+        detector.detect("s1", "p1", "content_a", now=now)
+        detector.detect("s2", "p1", "content_b\x07", now=now)  # BEL
+
+        assert detector.get_last_state("s1", "p1") != PaneState.WAITING
+        assert detector.get_last_state("s2", "p1") == PaneState.WAITING
+
+    def test_multi_pane_same_session(self, detector):
+        """Multiple panes in same session track independently."""
+        now = time.time()
+        detector.detect("s1", "p1", "prompt$ ", now=now)
+        detector.detect("s1", "p2", "running...\x07", now=now)
+
+        assert detector.get_last_state("s1", "p2") == PaneState.WAITING
+
+    def test_idle_independent_per_session(self, detector):
+        """Idle timers should be per-session-pane, not global."""
+        now = time.time()
+        detector.detect("s1", "p1", "old", now=now - 60)
+        detector.detect("s2", "p1", "fresh", now=now)
+
+        assert detector.get_idle_seconds("s1", "p1") >= 55
+        assert detector.get_idle_seconds("s2", "p1") < 2
+
+    def test_state_transitions(self, detector):
+        """Test ACTIVE → IDLE → WAITING sequence."""
+        now = time.time()
+        # New content = ACTIVE
+        s = detector.detect("s1", "p1", "output line 1", now=now)
+        assert s == PaneState.ACTIVE
+
+        # Same content, within threshold = still ACTIVE
+        s = detector.detect("s1", "p1", "output line 1", now=now + 2)
+        assert s == PaneState.ACTIVE
+
+        # Same content, past threshold = IDLE
+        s = detector.detect("s1", "p1", "output line 1", now=now + 10)
+        assert s == PaneState.IDLE
+
+    def test_empty_content_detection(self, detector):
+        """Empty content should be handled without error."""
+        state = detector.detect("s1", "p1", "")
+        assert state in (PaneState.ACTIVE, PaneState.IDLE, PaneState.UNKNOWN)
+
+    def test_unicode_content(self, detector):
+        """Unicode content should be handled without error."""
+        state = detector.detect("s1", "p1", "🚀 deploying... ✅ done 日本語")
+        assert state is not None
+
+    def test_record_input_new_session(self, detector):
+        """Recording input for unseen session should not crash."""
+        detector.record_input("brand-new", "p1")
+        assert detector.get_idle_seconds("brand-new", "p1") < 2.0

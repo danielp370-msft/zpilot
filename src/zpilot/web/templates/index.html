@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>zpilot — Mission Control</title>
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/css/xterm.min.css">
+    <link rel="stylesheet" href="/static/vendor/xterm.min.css">
     <style>
         :root {
             --bg: #0d1117;
@@ -353,8 +353,8 @@
         </div>
     </div>
 
-    <script src="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/lib/xterm.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.10.0/lib/addon-fit.min.js"></script>
+    <script src="/static/vendor/xterm.min.js"></script>
+    <script src="/static/vendor/addon-fit.min.js"></script>
     <script>
         // ── State ──────────────────────────────────
         let dockedSessions = [];       // ordered list of docked session names
@@ -563,7 +563,7 @@
             const container = document.getElementById('panels-container');
             container.className = `panels-container layout-${currentLayout}`;
 
-            // Render tab bar
+            // Render tab bar (lightweight, safe to rebuild)
             const tabBar = document.getElementById('tab-bar');
             tabBar.innerHTML = dockedSessions.map(name => {
                 const s = sessionsData[name] || {};
@@ -591,40 +591,79 @@
                 visible = dockedSessions.slice(0, max);
             }
 
-            container.innerHTML = visible.map(name => {
+            // Reconcile DOM: keep existing panels, add new ones, remove stale ones
+            const existingPanels = container.querySelectorAll('.term-panel[data-session]');
+            const existingNames = new Set();
+            existingPanels.forEach(el => existingNames.add(el.dataset.session));
+            const visibleSet = new Set(visible);
+
+            // Remove panels not in visible set
+            existingPanels.forEach(el => {
+                if (!visibleSet.has(el.dataset.session)) {
+                    el.remove();
+                }
+            });
+            // Remove placeholder empty panels
+            container.querySelectorAll('.panel-empty').forEach(el => el.remove());
+
+            // Add or update visible panels
+            visible.forEach(name => {
                 const s = sessionsData[name] || {};
                 const isFocused = name === activeTab;
-                const barHidden = hideInputBar[name] ? 'hidden' : '';
-                return `<div class="term-panel ${isFocused ? 'focused' : ''}" data-session="${name}" onclick="if(activeTab!=='${name}'){activeTab='${name}'; renderPanels();}">
-                    <div class="term-header">
-                        <span>
-                            <span class="th-name">${esc(name)}</span>
-                            <span class="th-state"> · ${s.state || '?'} · idle ${s.idle_seconds || 0}s</span>
-                        </span>
-                        <span style="display:flex;gap:4px;align-items:center">
-                            <span class="th-toggle" onclick="event.stopPropagation(); toggleInputBar('${name}')" title="Toggle input bar">⌨</span>
-                            <span class="th-close" onclick="event.stopPropagation(); undockSession('${name}')">&times;</span>
-                        </span>
-                    </div>
-                    <div class="term-body" id="term-${name}"></div>
-                    <div class="term-input ${barHidden}" id="inputbar-${name}" onclick="event.stopPropagation()">
-                        <input type="text" id="input-${name}" placeholder="$ type command..."
-                               onkeydown="if(event.key==='Enter') sendCmd('${name}')"
-                               onfocus="event.stopPropagation()">
-                        <button onclick="event.stopPropagation(); sendCmd('${name}')">▶</button>
-                    </div>
-                </div>`;
-            }).join('');
+                let panel = container.querySelector(`.term-panel[data-session="${name}"]`);
+
+                if (!panel) {
+                    // Create new panel
+                    const barHidden = hideInputBar[name] ? 'hidden' : '';
+                    panel = document.createElement('div');
+                    panel.className = `term-panel ${isFocused ? 'focused' : ''}`;
+                    panel.dataset.session = name;
+                    panel.onclick = function() { if (activeTab !== name) { activeTab = name; renderPanels(); }};
+                    panel.innerHTML = `
+                        <div class="term-header">
+                            <span>
+                                <span class="th-name">${esc(name)}</span>
+                                <span class="th-state"> · ${s.state || '?'} · idle ${s.idle_seconds || 0}s</span>
+                            </span>
+                            <span style="display:flex;gap:4px;align-items:center">
+                                <span class="th-toggle" onclick="event.stopPropagation(); toggleInputBar('${name}')" title="Toggle input bar">⌨</span>
+                                <span class="th-close" onclick="event.stopPropagation(); undockSession('${name}')">&times;</span>
+                            </span>
+                        </div>
+                        <div class="term-body" id="term-${name}"></div>
+                        <div class="term-input ${barHidden}" id="inputbar-${name}" onclick="event.stopPropagation()">
+                            <input type="text" id="input-${name}" placeholder="$ type command..."
+                                   onkeydown="if(event.key==='Enter') sendCmd('${name}')"
+                                   onfocus="event.stopPropagation()">
+                            <button onclick="event.stopPropagation(); sendCmd('${name}')">▶</button>
+                        </div>`;
+                    container.appendChild(panel);
+                } else {
+                    // Update existing panel header (no DOM rebuild of term-body)
+                    panel.className = `term-panel ${isFocused ? 'focused' : ''}`;
+                    const thState = panel.querySelector('.th-state');
+                    if (thState) thState.textContent = ` · ${s.state || '?'} · idle ${s.idle_seconds || 0}s`;
+                    // Update input bar visibility
+                    const inputBar = panel.querySelector('.term-input');
+                    if (inputBar) {
+                        if (hideInputBar[name]) inputBar.classList.add('hidden');
+                        else inputBar.classList.remove('hidden');
+                    }
+                }
+            });
 
             // Fill empty grid cells
             for (let i = visible.length; i < max; i++) {
-                container.innerHTML += `<div class="panel-empty"><div style="text-align:center;opacity:0.4">
+                const empty = document.createElement('div');
+                empty.className = 'panel-empty';
+                empty.innerHTML = `<div style="text-align:center;opacity:0.4">
                     <div style="font-size:1.5rem">+</div>
                     <div class="hint">Click a session to fill</div>
-                </div></div>`;
+                </div>`;
+                container.appendChild(empty);
             }
 
-            // Attach xterm.js to each visible panel
+            // Attach xterm.js to each visible panel (only if not already attached)
             visible.forEach(name => {
                 const el = document.getElementById(`term-${name}`);
                 if (!el) return;

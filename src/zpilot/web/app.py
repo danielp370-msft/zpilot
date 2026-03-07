@@ -131,7 +131,8 @@ async def ws_terminal(websocket: WebSocket, session_name: str):
         # Send initial content
         content = await zellij.dump_pane(session=session_name, pane_name="main", tail_lines=200)
         if content:
-            await websocket.send_json({"type": "output", "data": content})
+            normalized = _normalize_for_xterm(content)
+            await websocket.send_json({"type": "output", "data": normalized})
             import hashlib
             last_hash = hashlib.md5(content.encode()).hexdigest()
             last_full_content = content
@@ -154,9 +155,11 @@ async def ws_terminal(websocket: WebSocket, session_name: str):
                         if last_full_content and content.startswith(last_full_content):
                             delta = content[len(last_full_content):]
                             if delta:
-                                await websocket.send_json({"type": "append", "data": delta})
+                                normalized_delta = _normalize_for_xterm(delta)
+                                await websocket.send_json({"type": "append", "data": normalized_delta})
                         else:
-                            await websocket.send_json({"type": "output", "data": content})
+                            normalized = _normalize_for_xterm(content)
+                            await websocket.send_json({"type": "output", "data": normalized})
                         last_hash = h
                         last_full_content = content
                         # Update detector with fresh content
@@ -222,6 +225,38 @@ def _strip_ansi(text: str) -> str:
     text = _re.sub(r'[\x00-\x08\x0e-\x1f]', '', text)      # control chars (keep \n \t)
     # Collapse runs of blank lines (from cursor positioning) into single blank line
     text = _re.sub(r'\n{3,}', '\n\n', text)
+    return text
+
+
+def _normalize_for_xterm(text: str) -> str:
+    """Normalize terminal log content for xterm.js rendering.
+
+    Keeps SGR color codes (\\x1b[...m) but strips cursor positioning and other
+    CSI sequences that cause misalignment when replaying at different terminal sizes.
+    Converts \\n to \\r\\n for proper xterm.js line handling.
+    """
+    # Detect full-screen apps and keep last frame
+    frames = _re.split(r'\x1b\[2J|\x1b\[\?1049[hl]', text)
+    if len(frames) > 1:
+        for frame in reversed(frames):
+            if frame.strip():
+                text = frame
+                break
+
+    # Strip OSC sequences (title setting, hyperlinks, etc.)
+    text = _re.sub(r'\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)', '', text)
+    # Strip charset switches and keypad mode
+    text = _re.sub(r'\x1b[()][0-9A-B]', '', text)
+    text = _re.sub(r'\x1b[=>]', '', text)
+    # Strip CSI sequences EXCEPT SGR (color: ends with 'm')
+    # CSI = \x1b[ followed by params and a letter
+    text = _re.sub(r'\x1b\[[0-9;?]*[a-ln-zA-LN-Z]', '', text)  # keep 'm', strip others
+    # Strip non-printable control chars except \n, \t, \r, and ESC (for SGR)
+    text = _re.sub(r'[\x00-\x08\x0e-\x1a\x1c-\x1f]', '', text)
+    # Collapse excessive blank lines
+    text = _re.sub(r'\n{3,}', '\n\n', text)
+    # Convert \n to \r\n for xterm.js (needs CR to return to column 0)
+    text = text.replace('\r\n', '\n').replace('\n', '\r\n')
     return text
 
 

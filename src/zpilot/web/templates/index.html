@@ -44,10 +44,15 @@
         .topbar h1 { font-size: 0.9rem; color: var(--accent); white-space: nowrap; }
         .topbar h1 span { color: var(--text-dim); font-weight: normal; }
         .topbar-right { display: flex; align-items: center; gap: 12px; font-size: 0.75rem; color: var(--text-dim); }
-        .live-dot {
+        .live-dot, .status-dot.online {
             display: inline-block; width: 6px; height: 6px;
             background: var(--green); border-radius: 50%;
             animation: pulse 2s infinite;
+        }
+        .status-dot.offline {
+            display: inline-block; width: 6px; height: 6px;
+            background: #f44; border-radius: 50%;
+            animation: pulse 1s infinite;
         }
         @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.4} }
 
@@ -296,7 +301,7 @@
             </div>
         </div>
         <div class="topbar-right">
-            <span><span class="live-dot"></span> Live</span>
+            <span><span id="sse-dot" class="status-dot online"></span> <span>Live</span></span>
             <span id="session-count">{{ sessions|length }} sessions</span>
             <span id="last-update"></span>
         </div>
@@ -371,6 +376,7 @@
         const maxPanels = { '1': 1, '2h': 2, '2v': 2, '4': 4 };
 
         // ── SSE ────────────────────────────────────
+        let sseRetryDelay = 1000;
         function connectSSE() {
             const src = new EventSource('/api/stream');
             src.onmessage = (e) => addEvent(JSON.parse(e.data));
@@ -382,7 +388,21 @@
                 updateTabDots();
                 document.getElementById('session-count').textContent = sessions.length + ' sessions';
                 document.getElementById('last-update').textContent = new Date().toLocaleTimeString();
+                sseRetryDelay = 1000;
             });
+            src.onerror = () => {
+                src.close();
+                console.warn(`[zpilot] SSE lost, reconnecting in ${sseRetryDelay/1000}s…`);
+                document.getElementById('sse-dot').className = 'status-dot offline';
+                document.getElementById('sse-dot').nextElementSibling.textContent = 'Reconnecting…';
+                setTimeout(connectSSE, sseRetryDelay);
+                sseRetryDelay = Math.min(sseRetryDelay * 2, 30000);
+            };
+            src.onopen = () => {
+                document.getElementById('sse-dot').className = 'status-dot online';
+                document.getElementById('sse-dot').nextElementSibling.textContent = 'Live';
+                sseRetryDelay = 1000;
+            };
         }
         if (document.readyState === 'complete') connectSSE();
         else window.addEventListener('load', connectSSE);
@@ -493,6 +513,7 @@
             return term;
         }
 
+        const wsRetryDelay = {};  // per-session backoff
         function connectTerminalWS(name) {
             if (termSockets[name]) {
                 if (termSockets[name].readyState === WebSocket.OPEN ||
@@ -505,6 +526,7 @@
 
             ws.onopen = () => {
                 console.log(`[zpilot] WebSocket connected: ${name}`);
+                wsRetryDelay[name] = 1000; // reset backoff on success
             };
 
             ws.onmessage = (e) => {
@@ -526,11 +548,12 @@
             };
 
             ws.onclose = () => {
-                console.log(`[zpilot] WebSocket closed: ${name}`);
-                // Auto-reconnect after 3s if still docked
+                const delay = wsRetryDelay[name] || 1000;
+                console.warn(`[zpilot] WebSocket closed: ${name}, reconnecting in ${delay/1000}s…`);
                 setTimeout(() => {
                     if (dockedSessions.includes(name)) connectTerminalWS(name);
-                }, 3000);
+                }, delay);
+                wsRetryDelay[name] = Math.min(delay * 2, 30000);
             };
 
             ws.onerror = (e) => {
@@ -543,6 +566,7 @@
                 termSockets[name].close();
                 delete termSockets[name];
             }
+            delete wsRetryDelay[name];
             if (terminals[name]) {
                 terminals[name].dispose();
                 delete terminals[name];

@@ -154,7 +154,11 @@ async def ws_terminal(websocket: WebSocket, session_name: str):
                         # Send incremental: if new content starts with old, send only the delta
                         if last_full_content and content.startswith(last_full_content):
                             delta = content[len(last_full_content):]
-                            if delta:
+                            # If delta contains clear-screen, send full output instead
+                            if delta and ('\x1b[2J' in delta or '\x1b[?1049' in delta):
+                                normalized = _normalize_for_xterm(content)
+                                await websocket.send_json({"type": "output", "data": normalized})
+                            elif delta:
                                 normalized_delta = _normalize_for_xterm(delta)
                                 await websocket.send_json({"type": "append", "data": normalized_delta})
                         else:
@@ -235,7 +239,7 @@ def _normalize_for_xterm(text: str) -> str:
     CSI sequences that cause misalignment when replaying at different terminal sizes.
     Converts \\n to \\r\\n for proper xterm.js line handling.
     """
-    # Detect full-screen apps and keep last frame
+    # Detect full-screen apps and keep last frame (strip clear-screen markers)
     frames = _re.split(r'\x1b\[2J|\x1b\[\?1049[hl]', text)
     if len(frames) > 1:
         for frame in reversed(frames):
@@ -248,13 +252,13 @@ def _normalize_for_xterm(text: str) -> str:
     # Strip charset switches and keypad mode
     text = _re.sub(r'\x1b[()][0-9A-B]', '', text)
     text = _re.sub(r'\x1b[=>]', '', text)
-    # Strip CSI sequences EXCEPT those xterm.js needs for rendering:
-    #   m = SGR (colors), K = erase in line, J = erase in display,
-    #   H = cursor position, A/B/C/D = cursor movement,
-    #   @ = insert chars, P = delete chars, L = insert lines, M = delete lines
-    # Only strip: ?-prefixed modes, scroll regions (r), and other rare CSI
-    text = _re.sub(r'\x1b\[\?[0-9;]*[a-zA-Z]', '', text)  # mode set/reset (?-prefixed)
-    text = _re.sub(r'\x1b\[[0-9;]*r', '', text)             # scroll region
+    # Strip ?-prefixed mode set/reset sequences
+    text = _re.sub(r'\x1b\[\?[0-9;]*[a-zA-Z]', '', text)
+    # Strip scroll region
+    text = _re.sub(r'\x1b\[[0-9;]*r', '', text)
+    # Strip absolute cursor positioning (H, f) — misaligns at different widths
+    # Keep relative movement (A/B/C/D) and inline editing (K/J/m/P/@/L/M)
+    text = _re.sub(r'\x1b\[[0-9;]*[Hf]', '', text)
     # Strip non-printable control chars except \b, \n, \t, \r, \x1b, \x7f
     text = _re.sub(r'[\x00-\x07\x0e-\x1a\x1c-\x1f]', '', text)
     # Collapse excessive blank lines

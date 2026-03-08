@@ -513,7 +513,8 @@
                 try {
                     const msg = JSON.parse(e.data);
                     if (msg.type === 'output') {
-                        term.clear();
+                        term.write('\x1b[2J\x1b[H');  // clear screen + cursor home
+                        term.clear();                    // clear scrollback
                         term.write(msg.data);
                     } else if (msg.type === 'append') {
                         term.write(msg.data);

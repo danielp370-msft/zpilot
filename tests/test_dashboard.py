@@ -191,3 +191,70 @@ class TestSessionListRendering:
             assert "si-state" in html
             assert "si-preview" in html
             assert "si-meta" in html
+
+
+@pytest.mark.asyncio
+class TestReconnectionLogic:
+    """Test that reconnection and resilience code is present in the dashboard."""
+
+    async def test_sse_reconnect_on_error(self, client):
+        """SSE should have onerror handler that reconnects."""
+        async with client:
+            html = (await client.get("/")).text
+            assert "src.onerror" in html
+            assert "src.close()" in html
+            assert "setTimeout(connectSSE" in html
+
+    async def test_sse_exponential_backoff(self, client):
+        """SSE reconnect should use exponential backoff up to 30s."""
+        async with client:
+            html = (await client.get("/")).text
+            assert "sseRetryDelay" in html
+            assert "sseRetryDelay * 2" in html
+            assert "30000" in html
+
+    async def test_sse_status_dot_offline(self, client):
+        """SSE error should flip status dot to offline."""
+        async with client:
+            html = (await client.get("/")).text
+            assert "status-dot offline" in html
+            assert "Reconnecting" in html
+
+    async def test_sse_status_dot_online(self, client):
+        """SSE open should flip status dot back to online."""
+        async with client:
+            html = (await client.get("/")).text
+            assert "src.onopen" in html
+            assert "status-dot online" in html
+
+    async def test_sse_dot_element_exists(self, client):
+        """Status bar should have sse-dot element."""
+        async with client:
+            html = (await client.get("/")).text
+            assert 'id="sse-dot"' in html
+            assert 'class="status-dot online"' in html
+
+    async def test_ws_reconnect_with_backoff(self, client):
+        """WebSocket should reconnect with exponential backoff."""
+        async with client:
+            html = (await client.get("/")).text
+            assert "wsRetryDelay" in html
+            assert "wsRetryDelay[name] = Math.min" in html
+
+    async def test_ws_backoff_resets_on_connect(self, client):
+        """WebSocket backoff should reset on successful connection."""
+        async with client:
+            html = (await client.get("/")).text
+            assert "wsRetryDelay[name] = 1000" in html
+
+    async def test_ws_cleanup_on_destroy(self, client):
+        """Destroying a terminal should clean up retry state."""
+        async with client:
+            html = (await client.get("/")).text
+            assert "delete wsRetryDelay[name]" in html
+
+    async def test_offline_dot_css(self, client):
+        """Should have CSS for offline status dot (red)."""
+        async with client:
+            html = (await client.get("/")).text
+            assert ".status-dot.offline" in html

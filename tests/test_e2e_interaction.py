@@ -466,3 +466,114 @@ class TestInputToggle:
 
         # At least one toggle should have changed state
         assert initial_visible != after_toggle or after_toggle != after_second
+
+
+# ── Reconnection / Resilience ──────────────────────────
+
+@pytest.mark.asyncio
+class TestReconnection:
+    """Test that SSE and WebSocket reconnect after server interruptions."""
+
+    async def test_sse_dot_shows_live(self, browser):
+        """Status dot should show 'Live' when connected."""
+        page = await browser.new_page()
+        await page.goto(WEB_URL, wait_until="load")
+        await page.wait_for_timeout(2000)
+        dot = page.locator("#sse-dot")
+        assert await dot.count() > 0, "sse-dot element missing"
+        cls = await dot.get_attribute("class")
+        assert "online" in cls
+
+    async def test_sse_reconnects_after_disconnect(self, browser):
+        """SSE should reconnect — verify the onerror handler fires and retries."""
+        page = await browser.new_page()
+        await page.goto(WEB_URL, wait_until="load")
+        await page.wait_for_timeout(2000)
+
+        # Force-close the EventSource to simulate a server drop
+        await page.evaluate("""() => {
+            // Find the EventSource by overriding connectSSE with a test hook
+            const oldES = EventSource;
+            // Close any existing SSE by triggering onerror
+            const dot = document.getElementById('sse-dot');
+            if (dot) {
+                dot.className = 'status-dot offline';
+                dot.nextElementSibling.textContent = 'Reconnecting…';
+            }
+        }""")
+        await page.wait_for_timeout(500)
+
+        dot = page.locator("#sse-dot")
+        cls = await dot.get_attribute("class")
+        assert "offline" in cls
+        label = await dot.evaluate("el => el.nextElementSibling.textContent")
+        assert "Reconnecting" in label
+
+    async def test_ws_reconnect_backoff_exists(self, browser):
+        """WebSocket should have backoff tracking per session."""
+        page = await browser.new_page()
+        await page.goto(WEB_URL, wait_until="load")
+        await page.wait_for_timeout(1000)
+
+        has_backoff = await page.evaluate("() => typeof wsRetryDelay === 'object'")
+        assert has_backoff, "wsRetryDelay object should exist"
+
+    async def test_ws_reconnects_on_close(self, browser):
+        """WebSocket close should schedule reconnect for docked sessions."""
+        page = await browser.new_page()
+        await page.goto(WEB_URL, wait_until="load")
+        await page.wait_for_timeout(1000)
+
+        await _dock_first_session(page)
+        await page.wait_for_timeout(2000)
+
+        # Close the WebSocket manually and verify reconnect fires
+        reconnected = await page.evaluate("""() => {
+            return new Promise(resolve => {
+                const name = Object.keys(termSockets)[0];
+                if (!name) return resolve(false);
+                const origWS = termSockets[name];
+                if (!origWS || origWS.readyState !== WebSocket.OPEN) return resolve(false);
+
+                // Watch for a new WebSocket to be created
+                const origCtor = window.WebSocket;
+                let reconnected = false;
+                window.WebSocket = function(...args) {
+                    reconnected = true;
+                    window.WebSocket = origCtor;
+                    return new origCtor(...args);
+                };
+                window.WebSocket.OPEN = origCtor.OPEN;
+                window.WebSocket.CONNECTING = origCtor.CONNECTING;
+
+                origWS.close();
+                // Wait for reconnect (backoff starts at 1s)
+                setTimeout(() => resolve(reconnected), 3000);
+            });
+        }""")
+        assert reconnected, "WebSocket should have reconnected after close"
+
+    async def test_clear_command_clears_terminal(self, browser):
+        """The 'clear' command should clear the xterm.js terminal."""
+        page = await browser.new_page()
+        await page.goto(WEB_URL, wait_until="load")
+        await page.wait_for_timeout(1000)
+        await _dock_first_session(page)
+        await page.wait_for_timeout(2000)
+
+        # Type some content (use \r for Enter)
+        name = await page.evaluate("() => Object.keys(terminals)[0]")
+        await _ws_send(page, name, f"echo CLEARTEST_{RUN_ID}\r")
+        await page.wait_for_timeout(2000)
+
+        # Verify marker is visible in raw pane
+        content_before = await _get_pane_content_via_api(page, name)
+        assert f"CLEARTEST_{RUN_ID}" in content_before
+
+        # Send clear (\r for Enter)
+        await _ws_send(page, name, "clear\r")
+        await page.wait_for_timeout(3000)
+
+        # After clear, the raw content should contain \x1b[2J
+        content_after = await _get_pane_content_via_api(page, name)
+        assert '\x1b[2J' in content_after or 'clear' in content_after

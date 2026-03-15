@@ -45,10 +45,10 @@ zpilot down
 ```bash
 ssh remote-box
 
-# Start zpilot (localhost only by default — secure)
+# Start zpilot (HTTPS, localhost only by default)
 zpilot up
 
-# Or expose for remote browser access
+# Or expose for remote browser access (HTTPS)
 zpilot up --host 0.0.0.0
 
 # Create sessions, disconnect — everything keeps running
@@ -66,6 +66,7 @@ zpilot down            # clean shutdown
 
 The web dashboard (`zpilot up` or `zpilot web`) provides:
 
+- **HTTPS by default** — auto-generated self-signed certificate
 - **Real-time terminal panels** — xterm.js with WebSocket, full ANSI/cursor support
 - **Multi-panel layouts** — single, side-by-side, stacked, 2×2 grid
 - **Live state detection** — waiting, active, idle, error, exited
@@ -75,6 +76,13 @@ The web dashboard (`zpilot up` or `zpilot web`) provides:
 
 Terminal dimensions sync from the browser to the PTY — panels use the
 full available width, not a fixed 80×24.
+
+### Security
+
+- **HTTPS** enabled by default with an auto-generated self-signed EC certificate
+  (stored at `/tmp/zpilot/cert.pem`, key at `0600` permissions, valid 1 year)
+- **Localhost only** by default — `zpilot up` binds to `127.0.0.1`
+- Use `--host 0.0.0.0` for remote access, `--no-ssl` to disable HTTPS
 
 ## State Detection
 
@@ -114,3 +122,4 @@ AI Agent → MCP Server → Zellij CLI Wrapper → Zellij Terminal Multiplexer
 
 - Python 3.11+
 - [Zellij](https://zellij.dev/) terminal multiplexer
+- `cryptography` package (for HTTPS — included in dependencies)

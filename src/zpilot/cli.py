@@ -133,11 +133,87 @@ def dashboard() -> None:
 @click.option("--host", default="0.0.0.0", help="Bind address")
 @click.option("--port", type=int, default=8095, help="Port number")
 def web(host: str, port: int) -> None:
-    """Launch the web dashboard."""
+    """Launch the web dashboard (foreground)."""
     ensure_config()
     from .web.app import run_web
     click.echo(f"🌐 zpilot web dashboard: http://localhost:{port}")
     run_web(host=host, port=port)
+
+
+PID_DIR = __import__("pathlib").Path("/tmp/zpilot")
+
+
+@main.command()
+@click.option("--host", default="127.0.0.1", help="Bind address (default: localhost only)")
+@click.option("--port", type=int, default=8095, help="Port number")
+@click.option("--open", "open_browser", is_flag=True, help="Open browser after starting")
+def up(host: str, port: int, open_browser: bool) -> None:
+    """Start zpilot services in the background.
+
+    Launches the web dashboard as a background daemon with a pidfile.
+    Binds to 127.0.0.1 by default — use --host 0.0.0.0 for remote access.
+    """
+    import os
+    import subprocess
+
+    PID_DIR.mkdir(parents=True, exist_ok=True)
+    web_pid_file = PID_DIR / "web.pid"
+
+    # Check if already running
+    if web_pid_file.exists():
+        try:
+            pid = int(web_pid_file.read_text().strip())
+            os.kill(pid, 0)  # check if alive
+            click.echo(f"⚡ zpilot is already running (PID {pid})")
+            click.echo(f"   Dashboard: http://localhost:{port}")
+            click.echo(f"   Stop with: zpilot down")
+            return
+        except (ProcessLookupError, ValueError):
+            web_pid_file.unlink(missing_ok=True)
+
+    # Start web server as a detached subprocess
+    proc = subprocess.Popen(
+        [sys.executable, "-m", "zpilot.web.app", "--host", host, "--port", str(port)],
+        stdout=open(PID_DIR / "web.log", "w"),
+        stderr=subprocess.STDOUT,
+        start_new_session=True,
+    )
+    web_pid_file.write_text(str(proc.pid))
+
+    click.echo(f"⚡ zpilot is up!")
+    click.echo(f"   Dashboard: http://{'localhost' if host == '127.0.0.1' else host}:{port}")
+    click.echo(f"   PID:       {proc.pid}")
+    click.echo(f"   Log:       {PID_DIR / 'web.log'}")
+    click.echo(f"   Stop with: zpilot down")
+
+    if open_browser:
+        import webbrowser
+        webbrowser.open(f"http://localhost:{port}")
+
+
+@main.command()
+def down() -> None:
+    """Stop zpilot background services."""
+    import os
+    import signal
+
+    PID_DIR.mkdir(parents=True, exist_ok=True)
+    web_pid_file = PID_DIR / "web.pid"
+
+    if not web_pid_file.exists():
+        click.echo("zpilot is not running (no pidfile found)")
+        return
+
+    try:
+        pid = int(web_pid_file.read_text().strip())
+        os.kill(pid, signal.SIGTERM)
+        click.echo(f"⚡ zpilot stopped (PID {pid})")
+    except ProcessLookupError:
+        click.echo("zpilot was not running (stale pidfile)")
+    except ValueError:
+        click.echo("Invalid pidfile")
+    finally:
+        web_pid_file.unlink(missing_ok=True)
 
 
 @main.command("notify-test")

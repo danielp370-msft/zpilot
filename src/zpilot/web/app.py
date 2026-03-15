@@ -351,3 +351,12 @@ def run_web(host: str = "0.0.0.0", port: int = 8095):
     """Run the web server."""
     import uvicorn
     uvicorn.run(app, host=host, port=port, log_level="info")
+
+
+if __name__ == "__main__":
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--host", default="127.0.0.1")
+    parser.add_argument("--port", type=int, default=8095)
+    args = parser.parse_args()
+    run_web(host=args.host, port=args.port)

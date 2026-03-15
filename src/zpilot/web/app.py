@@ -154,8 +154,10 @@ async def ws_terminal(websocket: WebSocket, session_name: str):
                         # Send incremental: if new content starts with old, send only the delta
                         if last_full_content and content.startswith(last_full_content):
                             delta = content[len(last_full_content):]
-                            # If delta contains clear-screen, send full output instead
-                            if delta and ('\x1b[2J' in delta or '\x1b[?1049' in delta):
+                            # If delta contains clear-screen or cursor positioning,
+                            # send full output so xterm.js can replay from clean state
+                            has_cursor = delta and _re.search(r'\x1b\[[0-9;]*[HfJ]', delta)
+                            if delta and ('\x1b[2J' in delta or '\x1b[?1049' in delta or has_cursor):
                                 normalized = _normalize_for_xterm(content)
                                 await websocket.send_json({"type": "output", "data": normalized})
                             elif delta:
@@ -256,9 +258,9 @@ def _normalize_for_xterm(text: str) -> str:
     text = _re.sub(r'\x1b\[\?[0-9;]*[a-zA-Z]', '', text)
     # Strip scroll region
     text = _re.sub(r'\x1b\[[0-9;]*r', '', text)
-    # Strip absolute cursor positioning (H, f) — misaligns at different widths
-    # Keep relative movement (A/B/C/D) and inline editing (K/J/m/P/@/L/M)
-    text = _re.sub(r'\x1b\[[0-9;]*[Hf]', '', text)
+    # Preserve cursor positioning (H, f) for xterm.js — needed for in-place
+    # animations, progress bars, TUI apps. Also keep relative movement (A/B/C/D)
+    # and inline editing (K/J/m/P/@/L/M).
     # Strip non-printable control chars except \b, \n, \t, \r, \x1b, \x7f
     text = _re.sub(r'[\x00-\x07\x0e-\x1a\x1c-\x1f]', '', text)
     # Collapse excessive blank lines

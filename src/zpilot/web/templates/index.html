@@ -123,7 +123,7 @@
         /* Topbar: LCARS elbow bar */
         [data-theme="lcars"] .topbar {
             background: #000;
-            border-bottom: none;
+            border-bottom: 3px solid var(--lcars-tan);
             padding: 0;
             height: 48px;
             position: relative;
@@ -133,39 +133,41 @@
             content: '';
             position: absolute;
             left: 0; top: 0; bottom: 0;
-            width: 180px;
+            width: 12px;
             background: var(--lcars-tan);
-            border-radius: 0 0 24px 0;
+            border-radius: 0 0 12px 0;
         }
         [data-theme="lcars"] .topbar::after {
             content: '';
             position: absolute;
             right: 0; top: 0; bottom: 0;
-            width: 120px;
+            width: 12px;
             background: var(--lcars-purple);
-            border-radius: 0 0 0 24px;
+            border-radius: 0 0 0 12px;
         }
         [data-theme="lcars"] .topbar-left {
             position: relative; z-index: 1;
-            padding-left: 14px;
+            padding-left: 24px;
         }
         [data-theme="lcars"] .topbar h1 {
             color: #ff9900;
-            font-size: 1rem;
-            letter-spacing: 0.15em;
+            font-size: 1.1rem;
+            letter-spacing: 0.2em;
             text-transform: uppercase;
             font-weight: 400;
         }
         [data-theme="lcars"] .topbar h1 span { color: var(--lcars-blue); }
         [data-theme="lcars"] .topbar-right {
             position: relative; z-index: 1;
-            padding-right: 140px;
+            padding-right: 24px;
+            color: var(--lcars-tan);
         }
         /* Layout buttons: pill shapes */
+        [data-theme="lcars"] .layout-btns { position: relative; z-index: 1; }
         [data-theme="lcars"] .layout-btns button {
-            background: var(--lcars-purple);
-            border: none;
-            color: #000;
+            background: #1a1a2e;
+            border: 1px solid var(--lcars-purple);
+            color: var(--lcars-purple);
             border-radius: 12px;
             padding: 3px 12px;
             font-weight: 700;
@@ -174,6 +176,7 @@
         [data-theme="lcars"] .layout-btns button:hover,
         [data-theme="lcars"] .layout-btns button.active {
             background: #ff9900;
+            border-color: #ff9900;
             color: #000;
         }
         [data-theme="lcars"] .layout-btns button:first-child { border-radius: 12px; }

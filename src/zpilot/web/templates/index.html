@@ -510,6 +510,14 @@
                 }
             });
 
+            // Forward resize events to WebSocket so server can resize the PTY
+            term.onResize(({ cols, rows }) => {
+                const ws = termSockets[name];
+                if (ws && ws.readyState === WebSocket.OPEN) {
+                    ws.send(JSON.stringify({ type: 'resize', cols, rows }));
+                }
+            });
+
             return term;
         }
 
@@ -579,7 +587,15 @@
         function fitTerminal(name) {
             const fitAddon = termFitAddons[name];
             if (fitAddon) {
-                try { fitAddon.fit(); } catch(e) {}
+                try {
+                    fitAddon.fit();
+                    // Send current dimensions to server after fit
+                    const term = terminals[name];
+                    const ws = termSockets[name];
+                    if (term && ws && ws.readyState === WebSocket.OPEN) {
+                        ws.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }));
+                    }
+                } catch(e) {}
             }
         }
 

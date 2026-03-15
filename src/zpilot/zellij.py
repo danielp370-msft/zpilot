@@ -214,6 +214,21 @@ async def write_to_pane(
     await _action(session, ["write-chars", text])
 
 
+async def resize_pane(cols: int, rows: int, session: str | None = None) -> bool:
+    """Resize the PTY in the shell wrapper via the FIFO control channel."""
+    if session:
+        fifo = FIFO_DIR / f"{session}.fifo"
+        if fifo.exists():
+            try:
+                fd = os.open(str(fifo), os.O_WRONLY | os.O_NONBLOCK)
+                os.write(fd, f"\x00RESIZE:{cols},{rows}\n".encode())
+                os.close(fd)
+                return True
+            except OSError:
+                pass
+    return False
+
+
 async def write_raw_input(
     text: str,
     session: str | None = None,

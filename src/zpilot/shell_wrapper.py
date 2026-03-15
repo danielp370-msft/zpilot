@@ -9,10 +9,13 @@ Usage:
     python3 -m zpilot.shell_wrapper <session-name> [command...]
 """
 
+import fcntl
 import os
 import pty
 import select
+import struct
 import sys
+import termios
 import threading
 import time
 from pathlib import Path
@@ -50,8 +53,19 @@ def main():
 
     # Parent: relay I/O, log output, and inject from FIFO
 
+    def set_pty_size(cols, rows):
+        """Set the PTY window size so the child shell knows its dimensions."""
+        import signal
+        winsize = struct.pack("HHHH", rows, cols, 0, 0)
+        fcntl.ioctl(master_fd, termios.TIOCSWINSZ, winsize)
+        os.kill(child_pid, signal.SIGWINCH)
+
     def fifo_reader():
-        """Read commands from FIFO and write to master (child's stdin)."""
+        """Read commands from FIFO and write to master (child's stdin).
+        
+        Special protocol: lines starting with \\x00RESIZE: are resize commands
+        in the format \\x00RESIZE:cols,rows\\n
+        """
         while True:
             try:
                 fd = os.open(str(fifo_path), os.O_RDONLY)
@@ -59,7 +73,16 @@ def main():
                     data = os.read(fd, 4096)
                     if not data:
                         break
-                    os.write(master_fd, data)
+                    # Check for resize command
+                    if data.startswith(b"\x00RESIZE:"):
+                        try:
+                            parts = data.strip().split(b":")[1].split(b",")
+                            cols, rows = int(parts[0]), int(parts[1])
+                            set_pty_size(cols, rows)
+                        except (ValueError, IndexError):
+                            pass
+                    else:
+                        os.write(master_fd, data)
                 os.close(fd)
             except OSError:
                 time.sleep(0.5)

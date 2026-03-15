@@ -186,7 +186,9 @@ async def ws_terminal(websocket: WebSocket, session_name: str):
                         # Named special key
                         await zellij.send_special_key(data["key"], session=session_name)
                     elif data.get("type") == "resize":
-                        pass  # Could forward resize to Zellij
+                        cols = data.get("cols", 80)
+                        rows = data.get("rows", 24)
+                        await zellij.resize_pane(cols, rows, session=session_name)
                     else:
                         # Raw terminal input (may contain control chars)
                         text = data.get("data", "")

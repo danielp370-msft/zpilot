@@ -347,10 +347,70 @@ async def _get_session_data() -> list[dict]:
     return sorted(result, key=lambda s: s["name"])
 
 
-def run_web(host: str = "0.0.0.0", port: int = 8095):
+CERT_DIR = __import__("pathlib").Path("/tmp/zpilot")
+
+
+def _ensure_self_signed_cert():
+    """Generate a self-signed cert if one doesn't exist."""
+    cert_file = CERT_DIR / "cert.pem"
+    key_file = CERT_DIR / "key.pem"
+    if cert_file.exists() and key_file.exists():
+        return str(cert_file), str(key_file)
+
+    CERT_DIR.mkdir(parents=True, exist_ok=True)
+    import datetime
+    import ipaddress
+
+    from cryptography import x509
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import ec
+    from cryptography.x509.oid import NameOID
+
+    key = ec.generate_private_key(ec.SECP256R1())
+    subject = issuer = x509.Name([
+        x509.NameAttribute(NameOID.COMMON_NAME, "zpilot"),
+    ])
+    cert = (
+        x509.CertificateBuilder()
+        .subject_name(subject)
+        .issuer_name(issuer)
+        .public_key(key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(datetime.datetime.utcnow())
+        .not_valid_after(datetime.datetime.utcnow() + datetime.timedelta(days=365))
+        .add_extension(
+            x509.SubjectAlternativeName([
+                x509.DNSName("localhost"),
+                x509.IPAddress(ipaddress.IPv4Address("127.0.0.1")),
+            ]),
+            critical=False,
+        )
+        .sign(key, hashes.SHA256())
+    )
+    key_file.write_bytes(key.private_bytes(
+        serialization.Encoding.PEM,
+        serialization.PrivateFormat.TraditionalOpenSSL,
+        serialization.NoEncryption(),
+    ))
+    key_file.chmod(0o600)
+    cert_file.write_bytes(cert.public_bytes(serialization.Encoding.PEM))
+    return str(cert_file), str(key_file)
+
+
+def run_web(host: str = "0.0.0.0", port: int = 8095, ssl: bool = True):
     """Run the web server."""
     import uvicorn
-    uvicorn.run(app, host=host, port=port, log_level="info")
+    kwargs = {}
+    if ssl:
+        try:
+            cert, key = _ensure_self_signed_cert()
+            kwargs["ssl_certfile"] = cert
+            kwargs["ssl_keyfile"] = key
+        except ImportError:
+            import sys
+            print("⚠️  cryptography package not installed — running without SSL", file=sys.stderr)
+            print("   Install with: pip install cryptography", file=sys.stderr)
+    uvicorn.run(app, host=host, port=port, log_level="info", **kwargs)
 
 
 if __name__ == "__main__":
@@ -358,5 +418,6 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8095)
+    parser.add_argument("--no-ssl", action="store_true")
     args = parser.parse_args()
-    run_web(host=args.host, port=args.port)
+    run_web(host=args.host, port=args.port, ssl=not args.no_ssl)

@@ -132,12 +132,14 @@ def dashboard() -> None:
 @main.command()
 @click.option("--host", default="0.0.0.0", help="Bind address")
 @click.option("--port", type=int, default=8095, help="Port number")
-def web(host: str, port: int) -> None:
+@click.option("--no-ssl", is_flag=True, help="Disable SSL")
+def web(host: str, port: int, no_ssl: bool) -> None:
     """Launch the web dashboard (foreground)."""
     ensure_config()
     from .web.app import run_web
-    click.echo(f"🌐 zpilot web dashboard: http://localhost:{port}")
-    run_web(host=host, port=port)
+    proto = "http" if no_ssl else "https"
+    click.echo(f"🌐 zpilot web dashboard: {proto}://localhost:{port}")
+    run_web(host=host, port=port, ssl=not no_ssl)
 
 
 PID_DIR = __import__("pathlib").Path("/tmp/zpilot")
@@ -146,18 +148,21 @@ PID_DIR = __import__("pathlib").Path("/tmp/zpilot")
 @main.command()
 @click.option("--host", default="127.0.0.1", help="Bind address (default: localhost only)")
 @click.option("--port", type=int, default=8095, help="Port number")
+@click.option("--no-ssl", is_flag=True, help="Disable SSL")
 @click.option("--open", "open_browser", is_flag=True, help="Open browser after starting")
-def up(host: str, port: int, open_browser: bool) -> None:
+def up(host: str, port: int, no_ssl: bool, open_browser: bool) -> None:
     """Start zpilot services in the background.
 
     Launches the web dashboard as a background daemon with a pidfile.
     Binds to 127.0.0.1 by default — use --host 0.0.0.0 for remote access.
+    Uses HTTPS by default with an auto-generated self-signed certificate.
     """
     import os
     import subprocess
 
     PID_DIR.mkdir(parents=True, exist_ok=True)
     web_pid_file = PID_DIR / "web.pid"
+    proto = "http" if no_ssl else "https"
 
     # Check if already running
     if web_pid_file.exists():
@@ -165,23 +170,27 @@ def up(host: str, port: int, open_browser: bool) -> None:
             pid = int(web_pid_file.read_text().strip())
             os.kill(pid, 0)  # check if alive
             click.echo(f"⚡ zpilot is already running (PID {pid})")
-            click.echo(f"   Dashboard: http://localhost:{port}")
+            click.echo(f"   Dashboard: {proto}://localhost:{port}")
             click.echo(f"   Stop with: zpilot down")
             return
         except (ProcessLookupError, ValueError):
             web_pid_file.unlink(missing_ok=True)
 
     # Start web server as a detached subprocess
+    cmd = [sys.executable, "-m", "zpilot.web.app", "--host", host, "--port", str(port)]
+    if no_ssl:
+        cmd.append("--no-ssl")
     proc = subprocess.Popen(
-        [sys.executable, "-m", "zpilot.web.app", "--host", host, "--port", str(port)],
+        cmd,
         stdout=open(PID_DIR / "web.log", "w"),
         stderr=subprocess.STDOUT,
         start_new_session=True,
     )
     web_pid_file.write_text(str(proc.pid))
 
+    display_host = 'localhost' if host == '127.0.0.1' else host
     click.echo(f"⚡ zpilot is up!")
-    click.echo(f"   Dashboard: http://{'localhost' if host == '127.0.0.1' else host}:{port}")
+    click.echo(f"   Dashboard: {proto}://{display_host}:{port}")
     click.echo(f"   PID:       {proc.pid}")
     click.echo(f"   Log:       {PID_DIR / 'web.log'}")
     click.echo(f"   Stop with: zpilot down")

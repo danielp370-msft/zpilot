@@ -245,35 +245,36 @@
         .term-body:focus-within { box-shadow: inset 0 0 0 1px var(--accent); }
         /* Hide inline prompt — xterm.js handles everything now */
         .term-body .inline-prompt { display: none; }
-        .term-input {
-            display: flex;
-            border-top: 1px solid var(--border);
-            flex-shrink: 0;
-        }
-        .term-input.hidden { display: none; }
-        .th-toggle {
-            cursor: pointer; color: var(--text-dim); padding: 0 4px;
-            font-size: 0.65rem; opacity: 0.7;
-        }
-        .th-toggle:hover { color: var(--accent); opacity: 1; }
-        .term-input input {
+        .term-body {
             flex: 1;
-            background: var(--bg);
-            border: none;
-            color: var(--text);
-            padding: 5px 8px;
-            font-family: inherit;
-            font-size: 0.75rem;
-            outline: none;
+            overflow: hidden;
+            position: relative;
         }
-        .term-input button {
-            padding: 5px 10px;
-            background: var(--accent);
-            border: none;
-            color: #000;
-            font-family: inherit;
-            font-size: 0.7rem;
-            cursor: pointer;
+
+        /* Settings gear */
+        .settings-btn {
+            cursor: pointer; font-size: 1.1rem; opacity: 0.6;
+            padding: 2px 6px; border-radius: 4px; user-select: none;
+        }
+        .settings-btn:hover { opacity: 1; background: var(--surface); }
+        .settings-panel {
+            display: none; position: absolute; right: 12px; top: 42px;
+            background: var(--surface); border: 1px solid var(--border);
+            border-radius: 6px; padding: 10px 14px; z-index: 100;
+            min-width: 200px; box-shadow: 0 4px 16px rgba(0,0,0,0.4);
+        }
+        .settings-panel.open { display: block; }
+        .settings-panel h3 {
+            margin: 0 0 8px 0; font-size: 0.75rem; color: var(--text-dim);
+            text-transform: uppercase; letter-spacing: 0.05em;
+        }
+        .settings-row {
+            display: flex; align-items: center; gap: 8px;
+            padding: 5px 0; font-size: 0.8rem; cursor: pointer;
+        }
+        .settings-row:hover { color: var(--accent); }
+        .settings-row input[type="checkbox"] {
+            accent-color: var(--accent);
         }
 
         /* Empty panel placeholder */
@@ -304,6 +305,18 @@
             <span><span id="sse-dot" class="status-dot online"></span> <span>Live</span></span>
             <span id="session-count">{{ sessions|length }} sessions</span>
             <span id="last-update"></span>
+            <span class="settings-btn" onclick="toggleSettings()" title="Settings">⚙</span>
+        </div>
+        <div class="settings-panel" id="settings-panel">
+            <h3>Settings</h3>
+            <label class="settings-row" title="Show the event log in the sidebar">
+                <input type="checkbox" id="opt-events" onchange="applySettings()" checked>
+                Show events panel
+            </label>
+            <label class="settings-row" title="Show session preview text in the sidebar">
+                <input type="checkbox" id="opt-preview" onchange="applySettings()" checked>
+                Show session preview
+            </label>
         </div>
     </div>
 
@@ -366,7 +379,57 @@
         let activeTab = null;           // name of focused tab
         let currentLayout = '2h';       // 1, 2h, 2v, 4
         let sessionsData = {};          // session name -> latest data from SSE
-        let hideInputBar = {};          // session -> true to hide bottom input bar
+
+        // ── Settings (persisted to localStorage) ──
+        const SETTINGS_KEY = 'zpilot_settings';
+        let settings = {
+            showEvents: true,
+            showPreview: true,
+        };
+        try {
+            const saved = JSON.parse(localStorage.getItem(SETTINGS_KEY));
+            if (saved) Object.assign(settings, saved);
+        } catch(e) {}
+
+        function saveSettings() {
+            localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
+        }
+
+        function toggleSettings() {
+            const panel = document.getElementById('settings-panel');
+            panel.classList.toggle('open');
+        }
+
+        // Close settings when clicking outside
+        document.addEventListener('click', (e) => {
+            const panel = document.getElementById('settings-panel');
+            const btn = document.querySelector('.settings-btn');
+            if (panel?.classList.contains('open') && !panel.contains(e.target) && !btn.contains(e.target)) {
+                panel.classList.remove('open');
+            }
+        });
+
+        function applySettings() {
+            settings.showEvents = document.getElementById('opt-events').checked;
+            settings.showPreview = document.getElementById('opt-preview').checked;
+            saveSettings();
+
+            // Apply events panel visibility
+            const evPanel = document.querySelector('.event-panel');
+            if (evPanel) evPanel.style.display = settings.showEvents ? '' : 'none';
+
+            // Apply preview visibility
+            document.querySelectorAll('.si-preview').forEach(el => {
+                el.style.display = settings.showPreview ? '' : 'none';
+            });
+        }
+
+        // Initialize settings UI on load
+        function initSettings() {
+            document.getElementById('opt-events').checked = settings.showEvents;
+            document.getElementById('opt-preview').checked = settings.showPreview;
+            applySettings();
+        }
 
         // xterm.js instances and WebSocket connections
         let terminals = {};             // session -> Terminal instance
@@ -655,7 +718,6 @@
 
                 if (!panel) {
                     // Create new panel
-                    const barHidden = hideInputBar[name] ? 'hidden' : '';
                     panel = document.createElement('div');
                     panel.className = `term-panel ${isFocused ? 'focused' : ''}`;
                     panel.dataset.session = name;
@@ -667,29 +729,16 @@
                                 <span class="th-state"> · ${s.state || '?'} · idle ${s.idle_seconds || 0}s</span>
                             </span>
                             <span style="display:flex;gap:4px;align-items:center">
-                                <span class="th-toggle" onclick="event.stopPropagation(); toggleInputBar('${name}')" title="Toggle input bar">⌨</span>
                                 <span class="th-close" onclick="event.stopPropagation(); undockSession('${name}')">&times;</span>
                             </span>
                         </div>
-                        <div class="term-body" id="term-${name}"></div>
-                        <div class="term-input ${barHidden}" id="inputbar-${name}" onclick="event.stopPropagation()">
-                            <input type="text" id="input-${name}" placeholder="$ type command..."
-                                   onkeydown="if(event.key==='Enter') sendCmd('${name}')"
-                                   onfocus="event.stopPropagation()">
-                            <button onclick="event.stopPropagation(); sendCmd('${name}')">▶</button>
-                        </div>`;
+                        <div class="term-body" id="term-${name}"></div>`;
                     container.appendChild(panel);
                 } else {
                     // Update existing panel header (no DOM rebuild of term-body)
                     panel.className = `term-panel ${isFocused ? 'focused' : ''}`;
                     const thState = panel.querySelector('.th-state');
                     if (thState) thState.textContent = ` · ${s.state || '?'} · idle ${s.idle_seconds || 0}s`;
-                    // Update input bar visibility
-                    const inputBar = panel.querySelector('.term-input');
-                    if (inputBar) {
-                        if (hideInputBar[name]) inputBar.classList.add('hidden');
-                        else inputBar.classList.remove('hidden');
-                    }
                 }
             });
 
@@ -733,18 +782,7 @@
             });
         }
 
-        // ── Toggle input bar visibility ──────────
-        function toggleInputBar(name) {
-            hideInputBar[name] = !hideInputBar[name];
-            const bar = document.getElementById(`inputbar-${name}`);
-            if (bar) bar.classList.toggle('hidden', !!hideInputBar[name]);
-            // Focus the xterm terminal when hiding bar
-            if (hideInputBar[name] && terminals[name]) {
-                terminals[name].focus();
-            }
-        }
-
-        // ── Send command (bottom bar) ─────────────
+        // ── Send command via API ─────────────
         async function sendCmd(name) {
             const input = document.getElementById(`input-${name}`);
             if (!input) return;
@@ -812,6 +850,7 @@
             sessionsData[s.name] = s;
         });
         if (dockedSessions.length > 0) activeTab = dockedSessions[0];
+        initSettings();
         renderPanels();
     </script>
 </body>

@@ -6,7 +6,7 @@
     <title>zpilot — Mission Control</title>
     <link rel="stylesheet" href="/static/vendor/xterm.min.css">
     <style>
-        :root {
+        :root, [data-theme="dark"] {
             --bg: #0d1117;
             --panel-bg: #161b22;
             --border: #30363d;
@@ -18,6 +18,85 @@
             --red: #f85149;
             --orange: #db6d28;
             --term-bg: #010409;
+            --glow: none;
+            --scanline: none;
+        }
+        [data-theme="cyberpunk"] {
+            --bg: #0a0a12;
+            --panel-bg: #12111f;
+            --border: #2a1f4e;
+            --text: #e0d4ff;
+            --text-dim: #8878b8;
+            --accent: #ff2a6d;
+            --green: #05ffa1;
+            --yellow: #ffd319;
+            --red: #ff2a6d;
+            --orange: #ff6e27;
+            --term-bg: #08060f;
+            --glow: 0 0 10px rgba(255,42,109,0.3), 0 0 40px rgba(255,42,109,0.1);
+            --scanline: repeating-linear-gradient(
+                0deg, transparent, transparent 2px, rgba(0,0,0,0.15) 2px, rgba(0,0,0,0.15) 4px
+            );
+        }
+        [data-theme="cyberpunk"] .topbar { border-bottom: 1px solid var(--accent); box-shadow: 0 2px 20px rgba(255,42,109,0.4); }
+        [data-theme="cyberpunk"] .topbar h1 { text-shadow: 0 0 10px var(--accent), 0 0 40px var(--accent); letter-spacing: 0.1em; }
+        [data-theme="cyberpunk"] .sidebar { border-right: 1px solid rgba(255,42,109,0.4); box-shadow: 2px 0 15px rgba(255,42,109,0.1); }
+        [data-theme="cyberpunk"] .term-header { border-bottom-color: #2a1f4e; }
+        [data-theme="cyberpunk"] .term-panel { border: 1px solid rgba(255,42,109,0.2); }
+        [data-theme="cyberpunk"] .term-panel.focused { border-color: rgba(255,42,109,0.5); box-shadow: 0 0 15px rgba(255,42,109,0.15); }
+        [data-theme="cyberpunk"] .term-panel.focused .term-header { background: linear-gradient(90deg, rgba(255,42,109,0.2), transparent); }
+        [data-theme="cyberpunk"] .si-state.active { background: var(--green); text-shadow: 0 0 6px var(--green); }
+        [data-theme="cyberpunk"] .si-state.waiting { background: var(--accent); text-shadow: 0 0 6px var(--accent); }
+        [data-theme="cyberpunk"] .status-dot.online { background: var(--green); box-shadow: 0 0 8px var(--green), 0 0 16px var(--green); }
+        [data-theme="cyberpunk"] .tab.active { border-color: var(--accent); box-shadow: 0 0 10px rgba(255,42,109,0.4); }
+        [data-theme="cyberpunk"] .layout-btns button:hover,
+        [data-theme="cyberpunk"] .layout-btns button.active { background: var(--accent); box-shadow: 0 0 10px var(--accent); }
+        [data-theme="cyberpunk"] .session-item:hover { background: rgba(255,42,109,0.08); }
+        [data-theme="cyberpunk"] .session-item.docked { background: rgba(255,42,109,0.12); border-left-color: var(--accent); }
+        [data-theme="cyberpunk"] .event-panel-header { text-shadow: 0 0 8px rgba(5,255,161,0.4); }
+        [data-theme="cyberpunk"] .ev-session { color: var(--accent); }
+        [data-theme="cyberpunk"] .sidebar-header button { border-color: var(--accent); color: var(--accent); }
+        [data-theme="cyberpunk"] .sidebar-header button:hover { background: var(--accent); color: #000; box-shadow: 0 0 10px var(--accent); }
+        [data-theme="cyberpunk"] .term-body::after {
+            content: ''; position: absolute; inset: 0; pointer-events: none;
+            background: var(--scanline); z-index: 1; opacity: 0.3;
+        }
+        /* Cyberpunk scrollbar */
+        [data-theme="cyberpunk"] ::-webkit-scrollbar { width: 6px; }
+        [data-theme="cyberpunk"] ::-webkit-scrollbar-track { background: var(--bg); }
+        [data-theme="cyberpunk"] ::-webkit-scrollbar-thumb { background: rgba(255,42,109,0.3); border-radius: 3px; }
+        [data-theme="cyberpunk"] ::-webkit-scrollbar-thumb:hover { background: var(--accent); }
+
+        [data-theme="monokai"] {
+            --bg: #272822;
+            --panel-bg: #2e2f2a;
+            --border: #49483e;
+            --text: #f8f8f2;
+            --text-dim: #75715e;
+            --accent: #a6e22e;
+            --green: #a6e22e;
+            --yellow: #e6db74;
+            --red: #f92672;
+            --orange: #fd971f;
+            --term-bg: #1e1f1c;
+            --glow: none;
+            --scanline: none;
+        }
+
+        [data-theme="light"] {
+            --bg: #f6f8fa;
+            --panel-bg: #ffffff;
+            --border: #d0d7de;
+            --text: #1f2328;
+            --text-dim: #656d76;
+            --accent: #0969da;
+            --green: #1a7f37;
+            --yellow: #9a6700;
+            --red: #cf222e;
+            --orange: #bc4c00;
+            --term-bg: #ffffff;
+            --glow: none;
+            --scanline: none;
         }
         * { box-sizing: border-box; margin: 0; padding: 0; }
         html, body { height: 100%; overflow: hidden; }
@@ -276,6 +355,13 @@
         .settings-row input[type="checkbox"] {
             accent-color: var(--accent);
         }
+        .theme-btn {
+            padding: 4px 10px; font-size: 0.7rem; border-radius: 4px;
+            border: 1px solid var(--border); background: var(--bg);
+            color: var(--text-dim); cursor: pointer; font-family: inherit;
+        }
+        .theme-btn:hover { border-color: var(--accent); color: var(--text); }
+        .theme-btn.active { border-color: var(--accent); color: var(--accent); background: rgba(88,166,255,0.1); }
 
         /* Empty panel placeholder */
         .panel-empty {
@@ -308,7 +394,14 @@
             <span class="settings-btn" onclick="toggleSettings()" title="Settings">⚙</span>
         </div>
         <div class="settings-panel" id="settings-panel">
-            <h3>Settings</h3>
+            <h3>Theme</h3>
+            <div style="display:flex;gap:6px;margin-bottom:12px;flex-wrap:wrap">
+                <button class="theme-btn" onclick="setTheme('dark')" data-theme-btn="dark" title="Dark">🌙 Dark</button>
+                <button class="theme-btn" onclick="setTheme('cyberpunk')" data-theme-btn="cyberpunk" title="Cyberpunk">⚡ Cyber</button>
+                <button class="theme-btn" onclick="setTheme('monokai')" data-theme-btn="monokai" title="Monokai">🎨 Monokai</button>
+                <button class="theme-btn" onclick="setTheme('light')" data-theme-btn="light" title="Light">☀️ Light</button>
+            </div>
+            <h3>Display</h3>
             <label class="settings-row" title="Show the event log in the sidebar">
                 <input type="checkbox" id="opt-events" onchange="applySettings()" checked>
                 Show events panel
@@ -383,6 +476,7 @@
         // ── Settings (persisted to localStorage) ──
         const SETTINGS_KEY = 'zpilot_settings';
         let settings = {
+            theme: 'dark',
             showEvents: true,
             showPreview: true,
         };
@@ -398,6 +492,21 @@
         function toggleSettings() {
             const panel = document.getElementById('settings-panel');
             panel.classList.toggle('open');
+        }
+
+        function setTheme(theme) {
+            settings.theme = theme;
+            document.documentElement.setAttribute('data-theme', theme);
+            // Update active button
+            document.querySelectorAll('.theme-btn').forEach(btn => {
+                btn.classList.toggle('active', btn.dataset.themeBtn === theme);
+            });
+            // Update xterm.js terminal backgrounds
+            const termBg = getComputedStyle(document.documentElement).getPropertyValue('--term-bg').trim();
+            Object.values(terminals).forEach(term => {
+                term.options.theme = { background: termBg };
+            });
+            saveSettings();
         }
 
         // Close settings when clicking outside
@@ -428,6 +537,7 @@
         function initSettings() {
             document.getElementById('opt-events').checked = settings.showEvents;
             document.getElementById('opt-preview').checked = settings.showPreview;
+            setTheme(settings.theme);
             applySettings();
         }
 

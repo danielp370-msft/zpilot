@@ -98,6 +98,255 @@
             --glow: none;
             --scanline: none;
         }
+
+        /* ── LCARS Theme ──────────────────────────── */
+        [data-theme="lcars"] {
+            --bg: #000000;
+            --panel-bg: #0a0a14;
+            --border: #1a1a2e;
+            --text: #ff9900;
+            --text-dim: #cc7700;
+            --accent: #ff9900;
+            --green: #00cc66;
+            --yellow: #ffcc00;
+            --red: #cc3300;
+            --orange: #ff6633;
+            --term-bg: #000000;
+            --glow: none;
+            --scanline: none;
+            --lcars-purple: #9977dd;
+            --lcars-blue: #5599dd;
+            --lcars-tan: #cc9966;
+            --lcars-pink: #cc6699;
+            --lcars-red: #cc3300;
+        }
+        /* Topbar: LCARS elbow bar */
+        [data-theme="lcars"] .topbar {
+            background: #000;
+            border-bottom: none;
+            padding: 0;
+            height: 48px;
+            position: relative;
+            overflow: hidden;
+        }
+        [data-theme="lcars"] .topbar::before {
+            content: '';
+            position: absolute;
+            left: 0; top: 0; bottom: 0;
+            width: 180px;
+            background: var(--lcars-tan);
+            border-radius: 0 0 24px 0;
+        }
+        [data-theme="lcars"] .topbar::after {
+            content: '';
+            position: absolute;
+            right: 0; top: 0; bottom: 0;
+            width: 120px;
+            background: var(--lcars-purple);
+            border-radius: 0 0 0 24px;
+        }
+        [data-theme="lcars"] .topbar-left {
+            position: relative; z-index: 1;
+            padding-left: 14px;
+        }
+        [data-theme="lcars"] .topbar h1 {
+            color: #ff9900;
+            font-size: 1rem;
+            letter-spacing: 0.15em;
+            text-transform: uppercase;
+            font-weight: 400;
+        }
+        [data-theme="lcars"] .topbar h1 span { color: var(--lcars-blue); }
+        [data-theme="lcars"] .topbar-right {
+            position: relative; z-index: 1;
+            padding-right: 140px;
+        }
+        /* Layout buttons: pill shapes */
+        [data-theme="lcars"] .layout-btns button {
+            background: var(--lcars-purple);
+            border: none;
+            color: #000;
+            border-radius: 12px;
+            padding: 3px 12px;
+            font-weight: 700;
+            margin: 0 1px;
+        }
+        [data-theme="lcars"] .layout-btns button:hover,
+        [data-theme="lcars"] .layout-btns button.active {
+            background: #ff9900;
+            color: #000;
+        }
+        [data-theme="lcars"] .layout-btns button:first-child { border-radius: 12px; }
+        [data-theme="lcars"] .layout-btns button:last-child { border-radius: 12px; }
+
+        /* Sidebar: LCARS panel with colored edge */
+        [data-theme="lcars"] .sidebar {
+            background: #000;
+            border-right: none;
+            position: relative;
+        }
+        [data-theme="lcars"] .sidebar::before {
+            content: '';
+            position: absolute;
+            right: 0; top: 0; bottom: 0;
+            width: 4px;
+            background: linear-gradient(180deg, var(--lcars-tan), var(--lcars-purple), var(--lcars-blue), var(--lcars-pink));
+        }
+        [data-theme="lcars"] .sidebar-header {
+            background: var(--lcars-blue);
+            color: #000;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.1em;
+            border-bottom: 3px solid #000;
+            border-radius: 0 0 0 16px;
+            padding: 8px 14px;
+        }
+        [data-theme="lcars"] .sidebar-header button {
+            background: #000;
+            border: none;
+            color: var(--lcars-blue);
+            font-weight: 700;
+            border-radius: 8px;
+            padding: 2px 10px;
+        }
+        [data-theme="lcars"] .sidebar-header button:hover {
+            background: var(--lcars-blue);
+            color: #000;
+        }
+        /* Session items: bubble cards */
+        [data-theme="lcars"] .session-item {
+            border-bottom: 2px solid #0a0a14;
+            border-left: none;
+            margin: 4px 8px 0 4px;
+            padding: 8px 12px;
+            border-radius: 4px 14px 14px 4px;
+            background: #0a0a14;
+            position: relative;
+        }
+        [data-theme="lcars"] .session-item::before {
+            content: '';
+            position: absolute;
+            left: 0; top: 0; bottom: 0;
+            width: 4px;
+            border-radius: 4px 0 0 4px;
+            background: var(--lcars-purple);
+        }
+        [data-theme="lcars"] .session-item:hover {
+            background: #12122a;
+        }
+        [data-theme="lcars"] .session-item.docked {
+            background: #12122a;
+        }
+        [data-theme="lcars"] .session-item.docked::before {
+            background: #ff9900;
+        }
+        [data-theme="lcars"] .si-name {
+            color: #ff9900;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+        [data-theme="lcars"] .si-state {
+            border-radius: 10px;
+            font-size: 0.6rem;
+            padding: 1px 8px;
+        }
+        [data-theme="lcars"] .si-state.waiting { background: var(--lcars-pink); color: #000; }
+        [data-theme="lcars"] .si-state.active { background: var(--lcars-blue); color: #000; }
+        [data-theme="lcars"] .si-state.idle { background: var(--green); color: #000; }
+        [data-theme="lcars"] .si-state.error { background: var(--lcars-red); color: #fff; }
+        [data-theme="lcars"] .si-preview { color: var(--lcars-tan); }
+        [data-theme="lcars"] .si-meta { color: var(--lcars-purple); }
+
+        /* Event panel */
+        [data-theme="lcars"] .event-panel {
+            border-top: 3px solid var(--lcars-tan);
+        }
+        [data-theme="lcars"] .event-panel-header {
+            color: var(--lcars-tan);
+            text-transform: uppercase;
+            letter-spacing: 0.1em;
+            font-weight: 700;
+        }
+        [data-theme="lcars"] .ev-session { color: var(--lcars-blue); }
+        [data-theme="lcars"] .ev-row { border-bottom-color: #0a0a14; }
+
+        /* Tab bar */
+        [data-theme="lcars"] .tab-bar {
+            background: #000;
+            border-bottom: 3px solid var(--lcars-purple);
+        }
+        [data-theme="lcars"] .tab {
+            color: var(--lcars-purple);
+            border-right: 2px solid #000;
+            padding: 4px 16px;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            font-weight: 600;
+        }
+        [data-theme="lcars"] .tab:hover { background: rgba(153,119,221,0.15); }
+        [data-theme="lcars"] .tab.active {
+            background: var(--lcars-purple);
+            color: #000;
+            border-bottom: none;
+        }
+        [data-theme="lcars"] .tab .tab-dot.waiting { background: var(--lcars-pink); }
+        [data-theme="lcars"] .tab .tab-dot.active { background: var(--lcars-blue); }
+        [data-theme="lcars"] .tab .tab-dot.idle { background: var(--green); }
+
+        /* Terminal panels */
+        [data-theme="lcars"] .term-panel {
+            border: 2px solid #1a1a2e;
+            border-radius: 0 16px 16px 0;
+            overflow: hidden;
+        }
+        [data-theme="lcars"] .term-panel.focused {
+            border-color: var(--lcars-purple);
+        }
+        [data-theme="lcars"] .term-header {
+            background: linear-gradient(90deg, var(--lcars-purple), var(--lcars-blue));
+            color: #000;
+            border-bottom: 2px solid #000;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            padding: 4px 12px;
+        }
+        [data-theme="lcars"] .term-header .th-name { color: #000; }
+        [data-theme="lcars"] .term-header .th-state { color: rgba(0,0,0,0.6); }
+        [data-theme="lcars"] .term-header .th-close { color: rgba(0,0,0,0.5); }
+        [data-theme="lcars"] .term-header .th-close:hover { color: #fff; }
+        [data-theme="lcars"] .term-panel.focused .term-header {
+            background: linear-gradient(90deg, #ff9900, var(--lcars-tan));
+        }
+
+        /* Settings panel */
+        [data-theme="lcars"] .settings-panel {
+            background: #0a0a14;
+            border: 2px solid var(--lcars-purple);
+            border-radius: 4px 16px 16px 4px;
+        }
+        [data-theme="lcars"] .settings-panel h3 { color: var(--lcars-blue); }
+        [data-theme="lcars"] .settings-btn { color: var(--lcars-tan); }
+
+        /* Status dot */
+        [data-theme="lcars"] .status-dot.online {
+            background: var(--green);
+            box-shadow: 0 0 6px var(--green);
+        }
+
+        /* Scrollbar */
+        [data-theme="lcars"] ::-webkit-scrollbar { width: 6px; }
+        [data-theme="lcars"] ::-webkit-scrollbar-track { background: #000; }
+        [data-theme="lcars"] ::-webkit-scrollbar-thumb { background: var(--lcars-purple); border-radius: 3px; }
+        [data-theme="lcars"] ::-webkit-scrollbar-thumb:hover { background: #ff9900; }
+
+        /* Empty panel */
+        [data-theme="lcars"] .panel-empty {
+            border: 2px dashed var(--lcars-purple);
+            border-radius: 0 16px 16px 0;
+            color: var(--lcars-purple);
+        }
         * { box-sizing: border-box; margin: 0; padding: 0; }
         html, body { height: 100%; overflow: hidden; }
         body {
@@ -398,6 +647,7 @@
             <div style="display:flex;gap:6px;margin-bottom:12px;flex-wrap:wrap">
                 <button class="theme-btn" onclick="setTheme('dark')" data-theme-btn="dark" title="Dark">🌙 Dark</button>
                 <button class="theme-btn" onclick="setTheme('cyberpunk')" data-theme-btn="cyberpunk" title="Cyberpunk">⚡ Cyber</button>
+                <button class="theme-btn" onclick="setTheme('lcars')" data-theme-btn="lcars" title="LCARS">🖖 LCARS</button>
                 <button class="theme-btn" onclick="setTheme('monokai')" data-theme-btn="monokai" title="Monokai">🎨 Monokai</button>
                 <button class="theme-btn" onclick="setTheme('light')" data-theme-btn="light" title="Light">☀️ Light</button>
             </div>

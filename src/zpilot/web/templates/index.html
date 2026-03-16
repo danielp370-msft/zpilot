@@ -1078,6 +1078,8 @@
                     const ws = termSockets[name];
                     if (term && ws && ws.readyState === WebSocket.OPEN) {
                         ws.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }));
+                        // Request full content refresh after resize so terminal reflows
+                        ws.send(JSON.stringify({ type: 'refresh' }));
                     }
                 } catch(e) {}
             }
@@ -1145,10 +1147,7 @@
                     panel.onclick = function() { if (activeTab !== name) { activeTab = name; renderPanels(); }};
                     panel.innerHTML = `
                         <div class="term-header">
-                            <span>
-                                <span class="th-name">${esc(name)}</span>
-                                <span class="th-state"> · ${s.state || '?'} · idle ${s.idle_seconds || 0}s</span>
-                            </span>
+                            <span class="th-name">${esc(name)}</span>
                             <span style="display:flex;gap:4px;align-items:center">
                                 <span class="th-close" onclick="event.stopPropagation(); undockSession('${name}')">&times;</span>
                             </span>
@@ -1156,10 +1155,8 @@
                         <div class="term-body" id="term-${name}"></div>`;
                     container.appendChild(panel);
                 } else {
-                    // Update existing panel header (no DOM rebuild of term-body)
+                    // Update existing panel (just focus state, no header content to update)
                     panel.className = `term-panel ${isFocused ? 'focused' : ''}`;
-                    const thState = panel.querySelector('.th-state');
-                    if (thState) thState.textContent = ` · ${s.state || '?'} · idle ${s.idle_seconds || 0}s`;
                 }
             });
 

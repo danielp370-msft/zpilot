@@ -189,6 +189,10 @@ async def ws_terminal(websocket: WebSocket, session_name: str):
                         cols = data.get("cols", 80)
                         rows = data.get("rows", 24)
                         await zellij.resize_pane(cols, rows, session=session_name)
+                    elif data.get("type") == "refresh":
+                        # Force full content resend on next poll
+                        last_hash = ""
+                        last_full_content = ""
                     else:
                         # Raw terminal input (may contain control chars)
                         text = data.get("data", "")
@@ -265,10 +269,14 @@ def _normalize_for_xterm(text: str) -> str:
     # and inline editing (K/J/m/P/@/L/M).
     # Strip non-printable control chars except \b, \n, \t, \r, \x1b, \x7f
     text = _re.sub(r'[\x00-\x07\x0e-\x1a\x1c-\x1f]', '', text)
+    # Normalize line endings: collapse \r\n, \r, \n all to \n first
+    text = text.replace('\r\n', '\n').replace('\r', '\n')
     # Collapse excessive blank lines
     text = _re.sub(r'\n{3,}', '\n\n', text)
+    # Strip trailing blank lines before final prompt
+    text = _re.sub(r'\n{2,}$', '\n', text)
     # Convert \n to \r\n for xterm.js (needs CR to return to column 0)
-    text = text.replace('\r\n', '\n').replace('\n', '\r\n')
+    text = text.replace('\n', '\r\n')
     return text
 
 

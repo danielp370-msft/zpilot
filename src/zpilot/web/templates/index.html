@@ -240,6 +240,53 @@
         [data-theme="neon"] ::-webkit-scrollbar-thumb { background: #0c2840; border-radius: 3px; }
         [data-theme="neon"] ::-webkit-scrollbar-thumb:hover { background: #00d4ff; }
 
+        /* ── Neon Tron Effects ──────────────────── */
+
+        /* Status badges pulse when active/waiting */
+        @keyframes neon-pulse-cyan {
+            0%, 100% { box-shadow: 0 0 4px rgba(0,212,255,0.4); }
+            50% { box-shadow: 0 0 10px rgba(0,212,255,0.7), 0 0 20px rgba(0,212,255,0.3); }
+        }
+        @keyframes neon-pulse-green {
+            0%, 100% { box-shadow: 0 0 4px rgba(0,255,136,0.4); }
+            50% { box-shadow: 0 0 10px rgba(0,255,136,0.7), 0 0 20px rgba(0,255,136,0.3); }
+        }
+        [data-theme="neon"] .si-state.waiting {
+            animation: neon-pulse-cyan 2.5s ease-in-out infinite;
+        }
+        [data-theme="neon"] .si-state.active {
+            animation: neon-pulse-green 2s ease-in-out infinite;
+        }
+        [data-theme="neon"] .tab .tab-dot.waiting {
+            animation: neon-pulse-cyan 2.5s ease-in-out infinite;
+        }
+        [data-theme="neon"] .tab .tab-dot.active {
+            animation: neon-pulse-green 2s ease-in-out infinite;
+        }
+
+        /* Focused terminal border breathes */
+        @keyframes neon-border-breathe {
+            0%, 100% { border-color: #00d4ff; box-shadow: 0 0 8px rgba(0,212,255,0.15), inset 0 0 8px rgba(0,212,255,0.03); }
+            50% { border-color: #33e0ff; box-shadow: 0 0 16px rgba(0,212,255,0.3), inset 0 0 16px rgba(0,212,255,0.05); }
+        }
+        [data-theme="neon"] .term-panel.focused {
+            animation: neon-border-breathe 3s ease-in-out infinite;
+        }
+
+        /* Online status dot glow */
+        [data-theme="neon"] .status-dot.online {
+            animation: neon-pulse-green 2s ease-in-out infinite;
+        }
+
+        /* Docked session card left border glow */
+        @keyframes neon-edge-glow {
+            0%, 100% { border-left-color: #00d4ff; box-shadow: inset 2px 0 6px rgba(0,212,255,0.1); }
+            50% { border-left-color: #33e0ff; box-shadow: inset 2px 0 12px rgba(0,212,255,0.2); }
+        }
+        [data-theme="neon"] .session-item.docked {
+            animation: neon-edge-glow 3s ease-in-out infinite;
+        }
+
         /* ── LCARS Theme ──────────────────────────── */
         [data-theme="lcars"] {
             --bg: #000000;

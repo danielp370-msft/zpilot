@@ -103,6 +103,143 @@
             --scanline: none;
         }
 
+        /* ── Neon Theme ───────────────────────────── */
+        [data-theme="neon"] {
+            --bg: #020810;
+            --panel-bg: #06101a;
+            --border: #0c2840;
+            --text: #e0f0ff;
+            --text-dim: #4a8ab5;
+            --accent: #00d4ff;
+            --green: #00ff88;
+            --yellow: #ffee00;
+            --red: #ff3355;
+            --orange: #ff8800;
+            --term-bg: #010508;
+            --glow: none;
+            --scanline: none;
+        }
+        [data-theme="neon"] .topbar {
+            background: linear-gradient(90deg, #020810, #06101a);
+            border-bottom: 1px solid #00d4ff;
+            box-shadow: 0 1px 12px rgba(0,212,255,0.2);
+        }
+        [data-theme="neon"] .topbar h1 {
+            color: #fff;
+            text-shadow: 0 0 8px rgba(0,212,255,0.6), 0 0 20px rgba(0,212,255,0.3);
+            letter-spacing: 0.1em;
+        }
+        [data-theme="neon"] .topbar h1 span { color: #4a8ab5; }
+        [data-theme="neon"] .sidebar {
+            background: #06101a;
+            border-right: 1px solid #0c2840;
+        }
+        [data-theme="neon"] .sidebar-header {
+            background: transparent;
+            color: #00d4ff;
+            border-bottom: 1px solid #0c2840;
+            text-shadow: 0 0 6px rgba(0,212,255,0.4);
+        }
+        [data-theme="neon"] .sidebar-header button {
+            border-color: #00d4ff;
+            color: #00d4ff;
+        }
+        [data-theme="neon"] .sidebar-header button:hover {
+            background: #00d4ff;
+            color: #020810;
+            box-shadow: 0 0 8px rgba(0,212,255,0.5);
+        }
+        [data-theme="neon"] .session-item {
+            border-bottom: 1px solid #0c2840;
+            border-left: 2px solid transparent;
+            margin: 2px 4px;
+            border-radius: 4px;
+            padding: 8px 10px;
+        }
+        [data-theme="neon"] .session-item:hover {
+            background: rgba(0,212,255,0.06);
+            border-left-color: rgba(0,212,255,0.3);
+        }
+        [data-theme="neon"] .session-item.docked {
+            background: rgba(0,212,255,0.08);
+            border-left-color: #00d4ff;
+            box-shadow: inset 2px 0 8px rgba(0,212,255,0.1);
+        }
+        [data-theme="neon"] .si-name { color: #fff; }
+        [data-theme="neon"] .si-state.waiting { background: #00d4ff; color: #020810; }
+        [data-theme="neon"] .si-state.active { background: #00ff88; color: #020810; box-shadow: 0 0 6px rgba(0,255,136,0.4); }
+        [data-theme="neon"] .si-state.idle { background: #4a8ab5; color: #020810; }
+        [data-theme="neon"] .si-state.error { background: #ff3355; color: #fff; }
+        /* Layout buttons */
+        [data-theme="neon"] .layout-btns button {
+            background: transparent;
+            border: 1px solid #0c2840;
+            color: #4a8ab5;
+        }
+        [data-theme="neon"] .layout-btns button:hover,
+        [data-theme="neon"] .layout-btns button.active {
+            background: #00d4ff;
+            border-color: #00d4ff;
+            color: #020810;
+            box-shadow: 0 0 8px rgba(0,212,255,0.4);
+        }
+        /* Tabs */
+        [data-theme="neon"] .tab-bar {
+            background: #020810;
+            border-bottom: 1px solid #0c2840;
+        }
+        [data-theme="neon"] .tab { color: #4a8ab5; border-right-color: #0c2840; }
+        [data-theme="neon"] .tab:hover { background: rgba(0,212,255,0.06); color: #e0f0ff; }
+        [data-theme="neon"] .tab.active {
+            color: #fff;
+            background: rgba(0,212,255,0.15);
+            border-bottom: 2px solid #00d4ff;
+            box-shadow: 0 1px 10px rgba(0,212,255,0.2);
+            text-shadow: 0 0 6px rgba(0,212,255,0.5);
+        }
+        [data-theme="neon"] .tab .tab-dot.waiting { background: #00d4ff; box-shadow: 0 0 4px #00d4ff; }
+        [data-theme="neon"] .tab .tab-dot.active { background: #00ff88; box-shadow: 0 0 4px #00ff88; }
+        [data-theme="neon"] .tab .tab-dot.idle { background: #4a8ab5; }
+        /* Terminal panels */
+        [data-theme="neon"] .term-panel {
+            border: 1px solid #0c2840;
+        }
+        [data-theme="neon"] .term-panel.focused {
+            border-color: #00d4ff;
+            box-shadow: 0 0 12px rgba(0,212,255,0.15), inset 0 0 12px rgba(0,212,255,0.03);
+        }
+        [data-theme="neon"] .term-header {
+            background: rgba(0,212,255,0.06);
+            border-bottom: 1px solid #0c2840;
+        }
+        [data-theme="neon"] .term-header .th-name { color: #00d4ff; }
+        [data-theme="neon"] .term-panel.focused .term-header {
+            background: rgba(0,212,255,0.12);
+            border-bottom-color: rgba(0,212,255,0.3);
+        }
+        /* Events */
+        [data-theme="neon"] .event-panel { border-top-color: #0c2840; }
+        [data-theme="neon"] .event-panel-header { color: #00d4ff; }
+        [data-theme="neon"] .ev-session { color: #00d4ff; }
+        [data-theme="neon"] .ev-row { border-bottom-color: #0c2840; }
+        /* Status dot */
+        [data-theme="neon"] .status-dot.online {
+            background: #00ff88;
+            box-shadow: 0 0 6px #00ff88, 0 0 12px rgba(0,255,136,0.3);
+        }
+        /* Settings */
+        [data-theme="neon"] .settings-panel {
+            background: #06101a;
+            border: 1px solid #00d4ff;
+            box-shadow: 0 4px 20px rgba(0,212,255,0.15);
+        }
+        [data-theme="neon"] .settings-panel h3 { color: #00d4ff; }
+        /* Scrollbar */
+        [data-theme="neon"] ::-webkit-scrollbar { width: 5px; }
+        [data-theme="neon"] ::-webkit-scrollbar-track { background: #020810; }
+        [data-theme="neon"] ::-webkit-scrollbar-thumb { background: #0c2840; border-radius: 3px; }
+        [data-theme="neon"] ::-webkit-scrollbar-thumb:hover { background: #00d4ff; }
+
         /* ── LCARS Theme ──────────────────────────── */
         [data-theme="lcars"] {
             --bg: #000000;
@@ -709,6 +846,7 @@
                 <button class="theme-btn" onclick="setTheme('dark')" data-theme-btn="dark" title="Dark">🌙 Dark</button>
                 <button class="theme-btn" onclick="setTheme('cyberpunk')" data-theme-btn="cyberpunk" title="Cyberpunk">⚡ Cyber</button>
                 <button class="theme-btn" onclick="setTheme('lcars')" data-theme-btn="lcars" title="LCARS">🖖 LCARS</button>
+                <button class="theme-btn" onclick="setTheme('neon')" data-theme-btn="neon" title="Neon">💠 Neon</button>
                 <button class="theme-btn" onclick="setTheme('monokai')" data-theme-btn="monokai" title="Monokai">🎨 Monokai</button>
                 <button class="theme-btn" onclick="setTheme('light')" data-theme-btn="light" title="Light">☀️ Light</button>
             </div>

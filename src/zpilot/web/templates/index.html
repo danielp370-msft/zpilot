@@ -43,7 +43,11 @@
         [data-theme="cyberpunk"] .sidebar { border-right: 1px solid rgba(255,42,109,0.4); box-shadow: 2px 0 15px rgba(255,42,109,0.1); }
         [data-theme="cyberpunk"] .term-header { border-bottom-color: #2a1f4e; }
         [data-theme="cyberpunk"] .term-panel { border: 1px solid rgba(255,42,109,0.2); }
-        [data-theme="cyberpunk"] .term-panel.focused { border-color: rgba(255,42,109,0.5); box-shadow: 0 0 15px rgba(255,42,109,0.15); }
+        @keyframes cyber-glow {
+            0%, 100% { box-shadow: 0 0 10px rgba(255,42,109,0.2); }
+            50% { box-shadow: 0 0 20px rgba(255,42,109,0.4), 0 0 40px rgba(255,42,109,0.1); }
+        }
+        [data-theme="cyberpunk"] .term-panel.focused { border-color: rgba(255,42,109,0.5); animation: cyber-glow 3s ease-in-out infinite; }
         [data-theme="cyberpunk"] .term-panel.focused .term-header { background: linear-gradient(90deg, rgba(255,42,109,0.2), transparent); }
         [data-theme="cyberpunk"] .si-state.active { background: var(--green); text-shadow: 0 0 6px var(--green); }
         [data-theme="cyberpunk"] .si-state.waiting { background: var(--accent); text-shadow: 0 0 6px var(--accent); }
@@ -349,6 +353,94 @@
             border: 2px dashed var(--lcars-purple);
             border-radius: 0 16px 16px 0;
             color: var(--lcars-purple);
+        }
+
+        /* ── LCARS Special Effects ──────────────── */
+
+        /* Scanning beam across topbar */
+        @keyframes lcars-scan {
+            0% { left: -20%; opacity: 0; }
+            10% { opacity: 1; }
+            90% { opacity: 1; }
+            100% { left: 120%; opacity: 0; }
+        }
+        [data-theme="lcars"] .topbar::after {
+            content: '';
+            position: absolute;
+            left: -20%; top: 0; bottom: 0;
+            width: 15%;
+            background: linear-gradient(90deg, transparent, rgba(255,153,0,0.15), transparent);
+            border-radius: 0;
+            animation: lcars-scan 4s ease-in-out infinite;
+            z-index: 0;
+        }
+
+        /* Data stream on sidebar edge */
+        @keyframes lcars-datastream {
+            0% { background-position: 0 0; }
+            100% { background-position: 0 200px; }
+        }
+        [data-theme="lcars"] .sidebar::before {
+            content: '';
+            position: absolute;
+            right: 0; top: 0; bottom: 0;
+            width: 4px;
+            background: repeating-linear-gradient(
+                180deg,
+                var(--lcars-tan) 0px, var(--lcars-tan) 8px,
+                transparent 8px, transparent 12px,
+                var(--lcars-purple) 12px, var(--lcars-purple) 20px,
+                transparent 20px, transparent 24px,
+                var(--lcars-blue) 24px, var(--lcars-blue) 30px,
+                transparent 30px, transparent 36px,
+                var(--lcars-pink) 36px, var(--lcars-pink) 40px,
+                transparent 40px, transparent 50px
+            );
+            background-size: 4px 200px;
+            animation: lcars-datastream 3s linear infinite;
+        }
+
+        /* Pulsing glow on active session status */
+        @keyframes lcars-pulse-blue {
+            0%, 100% { box-shadow: 0 0 4px var(--lcars-blue); }
+            50% { box-shadow: 0 0 12px var(--lcars-blue), 0 0 20px rgba(85,153,221,0.3); }
+        }
+        @keyframes lcars-pulse-green {
+            0%, 100% { box-shadow: 0 0 4px var(--green); }
+            50% { box-shadow: 0 0 10px var(--green), 0 0 18px rgba(0,204,102,0.3); }
+        }
+        [data-theme="lcars"] .si-state.active {
+            animation: lcars-pulse-blue 2s ease-in-out infinite;
+        }
+        [data-theme="lcars"] .si-state.waiting {
+            animation: lcars-pulse-green 2.5s ease-in-out infinite;
+        }
+
+        /* Focused terminal border glow */
+        @keyframes lcars-border-glow {
+            0%, 100% { border-color: var(--lcars-purple); box-shadow: 0 0 8px rgba(153,119,221,0.2); }
+            50% { border-color: #bb99ff; box-shadow: 0 0 16px rgba(153,119,221,0.4); }
+        }
+        [data-theme="lcars"] .term-panel.focused {
+            animation: lcars-border-glow 3s ease-in-out infinite;
+        }
+
+        /* Status dot enhanced pulse */
+        [data-theme="lcars"] .status-dot.online {
+            background: var(--green);
+            box-shadow: 0 0 6px var(--green), 0 0 12px rgba(0,204,102,0.4);
+            animation: lcars-pulse-green 2s ease-in-out infinite;
+        }
+
+        /* Tab active glow sweep */
+        @keyframes lcars-tab-sweep {
+            0% { background-position: -100% 0; }
+            100% { background-position: 200% 0; }
+        }
+        [data-theme="lcars"] .tab.active {
+            background: linear-gradient(90deg, var(--lcars-purple) 0%, var(--lcars-purple) 40%, #bb99ff 50%, var(--lcars-purple) 60%, var(--lcars-purple) 100%);
+            background-size: 200% 100%;
+            animation: lcars-tab-sweep 3s ease-in-out infinite;
         }
         * { box-sizing: border-box; margin: 0; padding: 0; }
         html, body { height: 100%; overflow: hidden; }

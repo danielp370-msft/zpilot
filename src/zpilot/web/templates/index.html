@@ -357,47 +357,13 @@
 
         /* ── LCARS Special Effects ──────────────── */
 
-        /* Scanning beam across topbar */
-        @keyframes lcars-scan {
-            0% { left: -20%; opacity: 0; }
-            10% { opacity: 1; }
-            90% { opacity: 1; }
-            100% { left: 120%; opacity: 0; }
-        }
-        [data-theme="lcars"] .topbar::after {
-            content: '';
-            position: absolute;
-            left: -20%; top: 0; bottom: 0;
-            width: 15%;
-            background: linear-gradient(90deg, transparent, rgba(255,153,0,0.15), transparent);
-            border-radius: 0;
-            animation: lcars-scan 4s ease-in-out infinite;
-            z-index: 0;
-        }
-
-        /* Data stream on sidebar edge */
-        @keyframes lcars-datastream {
-            0% { background-position: 0 0; }
-            100% { background-position: 0 200px; }
-        }
+        /* Static sidebar accent strip (no animation) */
         [data-theme="lcars"] .sidebar::before {
             content: '';
             position: absolute;
             right: 0; top: 0; bottom: 0;
             width: 4px;
-            background: repeating-linear-gradient(
-                180deg,
-                var(--lcars-tan) 0px, var(--lcars-tan) 8px,
-                transparent 8px, transparent 12px,
-                var(--lcars-purple) 12px, var(--lcars-purple) 20px,
-                transparent 20px, transparent 24px,
-                var(--lcars-blue) 24px, var(--lcars-blue) 30px,
-                transparent 30px, transparent 36px,
-                var(--lcars-pink) 36px, var(--lcars-pink) 40px,
-                transparent 40px, transparent 50px
-            );
-            background-size: 4px 200px;
-            animation: lcars-datastream 3s linear infinite;
+            background: linear-gradient(180deg, var(--lcars-tan), var(--lcars-purple), var(--lcars-blue), var(--lcars-pink));
         }
 
         /* Pulsing glow on active session status */

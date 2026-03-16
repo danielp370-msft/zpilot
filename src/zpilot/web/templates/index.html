@@ -1041,6 +1041,7 @@
         let terminals = {};             // session -> Terminal instance
         let termSockets = {};           // session -> WebSocket
         let termFitAddons = {};         // session -> FitAddon
+        let termLastSize = {};          // session -> {cols, rows} for debouncing resize
 
         const maxPanels = { '1': 1, '2h': 2, '2v': 2, '4': 4 };
 
@@ -1179,8 +1180,11 @@
                 }
             });
 
-            // Forward resize events to WebSocket so server can resize the PTY
+            // Forward resize events to WebSocket — debounced, only if dimensions changed
             term.onResize(({ cols, rows }) => {
+                const last = termLastSize[name];
+                if (last && last.cols === cols && last.rows === rows) return;
+                termLastSize[name] = { cols, rows };
                 const ws = termSockets[name];
                 if (ws && ws.readyState === WebSocket.OPEN) {
                     ws.send(JSON.stringify({ type: 'resize', cols, rows }));
@@ -1258,14 +1262,6 @@
             if (fitAddon) {
                 try {
                     fitAddon.fit();
-                    // Send current dimensions to server after fit
-                    const term = terminals[name];
-                    const ws = termSockets[name];
-                    if (term && ws && ws.readyState === WebSocket.OPEN) {
-                        ws.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }));
-                        // Request full content refresh after resize so terminal reflows
-                        ws.send(JSON.stringify({ type: 'refresh' }));
-                    }
                 } catch(e) {}
             }
         }

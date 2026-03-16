@@ -269,8 +269,9 @@ def _normalize_for_xterm(text: str) -> str:
     # and inline editing (K/J/m/P/@/L/M).
     # Strip non-printable control chars except \b, \n, \t, \r, \x1b, \x7f
     text = _re.sub(r'[\x00-\x07\x0e-\x1a\x1c-\x1f]', '', text)
-    # Normalize line endings: collapse \r\n, \r, \n all to \n first
-    text = text.replace('\r\n', '\n').replace('\r', '\n')
+    # Normalize \r\n to \n for consistent handling, but preserve bare \r
+    # (xterm.js uses \r correctly as carriage return to column 0)
+    text = text.replace('\r\n', '\n')
     # Collapse excessive blank lines
     text = _re.sub(r'\n{3,}', '\n\n', text)
     # Strip trailing blank lines before final prompt

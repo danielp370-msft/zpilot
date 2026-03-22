@@ -1,0 +1,14 @@
+/home/danielp/zpilot/zpilot-zellij-plugin/target/wasm32-wasip1/release/deps/serde-f16ef60186041597.d: /home/danielp/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/lib.rs /home/danielp/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/integer128.rs /home/danielp/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/mod.rs /home/danielp/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/de.rs /home/danielp/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/ser.rs /home/danielp/zpilot/zpilot-zellij-plugin/target/wasm32-wasip1/release/build/serde-9c9e1760b29f3046/out/private.rs
+
+/home/danielp/zpilot/zpilot-zellij-plugin/target/wasm32-wasip1/release/deps/libserde-f16ef60186041597.rlib: /home/danielp/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/lib.rs /home/danielp/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/integer128.rs /home/danielp/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/mod.rs /home/danielp/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/de.rs /home/danielp/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/ser.rs /home/danielp/zpilot/zpilot-zellij-plugin/target/wasm32-wasip1/release/build/serde-9c9e1760b29f3046/out/private.rs
+
+/home/danielp/zpilot/zpilot-zellij-plugin/target/wasm32-wasip1/release/deps/libserde-f16ef60186041597.rmeta: /home/danielp/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/lib.rs /home/danielp/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/integer128.rs /home/danielp/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/mod.rs /home/danielp/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/de.rs /home/danielp/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/ser.rs /home/danielp/zpilot/zpilot-zellij-plugin/target/wasm32-wasip1/release/build/serde-9c9e1760b29f3046/out/private.rs
+
+/home/danielp/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/lib.rs:
+/home/danielp/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/integer128.rs:
+/home/danielp/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/mod.rs:
+/home/danielp/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/de.rs:
+/home/danielp/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/ser.rs:
+/home/danielp/zpilot/zpilot-zellij-plugin/target/wasm32-wasip1/release/build/serde-9c9e1760b29f3046/out/private.rs:
+
+# env-dep:OUT_DIR=/home/danielp/zpilot/zpilot-zellij-plugin/target/wasm32-wasip1/release/build/serde-9c9e1760b29f3046/out

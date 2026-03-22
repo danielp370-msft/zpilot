@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re as _re
 from typing import Any
 
 from mcp.server import Server
@@ -15,8 +16,66 @@ from .config import load_config
 from .detector import PaneDetector
 from .events import EventBus
 from .models import PaneState, ZpilotConfig
+from .nodes import Node, NodeRegistry, load_nodes
+from .monitor import Monitor
 
 log = logging.getLogger("zpilot.mcp")
+
+
+def _parse_session(session: str | None, registry: NodeRegistry | None) -> tuple[Node | None, str | None]:
+    """Parse a session string that may contain a node prefix.
+
+    Accepts:
+      "session_name"        → (None, "session_name")   — local
+      "node:session_name"   → (Node, "session_name")   — remote
+      None                  → (None, None)
+
+    Returns (node_or_none, session_name).
+    If node is None, the session is local.
+    """
+    if not session:
+        return None, None
+    if ":" in session and registry:
+        node_name, sess_name = session.split(":", 1)
+        try:
+            node = registry.get(node_name)
+            if not node.is_local:
+                return node, sess_name
+        except (KeyError, ValueError):
+            pass  # not a known node — treat whole string as session name
+    return None, session
+
+
+async def _remote_zellij(node: Node, zellij_args: str, timeout: float = 15.0) -> str:
+    """Run a zellij command on a remote node and return stdout."""
+    result = await node.transport.exec(f"zellij {zellij_args}", timeout=timeout)
+    if not result.ok:
+        raise RuntimeError(
+            f"zellij {zellij_args} failed on {node.name} (rc={result.returncode}): "
+            f"{result.stderr or result.stdout}"
+        )
+    return result.stdout
+
+
+async def _remote_dump_pane(node: Node, session: str, full: bool = False) -> str:
+    """Dump pane content from a remote node using a temp file.
+    
+    Uses force_pty=True because zellij dump-screen requires a TTY-attached
+    client to communicate with the server process.
+    """
+    full_flag = "--full" if full else ""
+    cmd = (
+        f"TMP=$(mktemp) && "
+        f"zellij --session {session} action dump-screen {full_flag} $TMP && "
+        f"cat $TMP && rm -f $TMP"
+    )
+    result = await node.transport.exec(cmd, timeout=15, force_pty=True)
+    if not result.ok:
+        raise RuntimeError(
+            f"dump-screen failed on {node.name}:{session} (rc={result.returncode}): "
+            f"{result.stderr or result.stdout}"
+        )
+    return result.stdout
 
 
 def create_mcp_server(config: ZpilotConfig | None = None) -> Server:
@@ -25,6 +84,15 @@ def create_mcp_server(config: ZpilotConfig | None = None) -> Server:
     server = Server("zpilot")
     detector = PaneDetector(config)
     event_bus = EventBus(config.events_file)
+    registry = NodeRegistry(load_nodes())
+    monitor = Monitor(registry, config, event_bus)
+
+    # Common node param schema fragment
+    NODE_PARAM = {
+        "type": "string",
+        "description": "Target node (default 'local'). Use list_nodes to see available.",
+        "default": "local",
+    }
 
     # ── Tool definitions ────────────────────────────────────────
 
@@ -79,7 +147,7 @@ def create_mcp_server(config: ZpilotConfig | None = None) -> Server:
                     "properties": {
                         "session": {
                             "type": "string",
-                            "description": "Target session name",
+                            "description": "Target session name. Use 'node:session' for remote nodes (e.g. 'dandroid1:zpilot-test')",
                         },
                         "name": {
                             "type": "string",
@@ -109,7 +177,7 @@ def create_mcp_server(config: ZpilotConfig | None = None) -> Server:
                     "properties": {
                         "session": {
                             "type": "string",
-                            "description": "Session name (uses current if omitted)",
+                            "description": "Session name (uses current if omitted). Use 'node:session' for remote nodes.",
                         },
                         "full": {
                             "type": "boolean",
@@ -130,7 +198,7 @@ def create_mcp_server(config: ZpilotConfig | None = None) -> Server:
                         },
                         "session": {
                             "type": "string",
-                            "description": "Target session",
+                            "description": "Target session. Use 'node:session' for remote nodes.",
                         },
                     },
                     "required": ["text"],
@@ -148,7 +216,7 @@ def create_mcp_server(config: ZpilotConfig | None = None) -> Server:
                         },
                         "session": {
                             "type": "string",
-                            "description": "Target session",
+                            "description": "Target session. Use 'node:session' for remote nodes (e.g. 'dandroid1:zpilot-test')",
                         },
                     },
                     "required": ["command"],
@@ -189,7 +257,7 @@ def create_mcp_server(config: ZpilotConfig | None = None) -> Server:
                     "properties": {
                         "session": {
                             "type": "string",
-                            "description": "Session name",
+                            "description": "Session name. Use 'node:session' for remote nodes.",
                         },
                     },
                     "required": ["session"],
@@ -225,7 +293,7 @@ def create_mcp_server(config: ZpilotConfig | None = None) -> Server:
                     "properties": {
                         "session": {
                             "type": "string",
-                            "description": "Session name",
+                            "description": "Session name. Use 'node:session' for remote nodes.",
                         },
                         "pattern": {
                             "type": "string",
@@ -248,7 +316,7 @@ def create_mcp_server(config: ZpilotConfig | None = None) -> Server:
                     "properties": {
                         "session": {
                             "type": "string",
-                            "description": "Session name",
+                            "description": "Session name. Use 'node:session' for remote nodes.",
                         },
                         "lines": {
                             "type": "integer",
@@ -273,7 +341,7 @@ def create_mcp_server(config: ZpilotConfig | None = None) -> Server:
                     "properties": {
                         "session": {
                             "type": "string",
-                            "description": "Session name",
+                            "description": "Session name. Use 'node:session' for remote nodes.",
                         },
                         "keys": {
                             "type": "array",
@@ -284,6 +352,35 @@ def create_mcp_server(config: ZpilotConfig | None = None) -> Server:
                     "required": ["session", "keys"],
                 },
             ),
+            # ── Fleet management tools ──
+            Tool(
+                name="list_nodes",
+                description="List all configured zpilot nodes and their connectivity status",
+                inputSchema={"type": "object", "properties": {}},
+            ),
+            Tool(
+                name="ping_node",
+                description="Check if a node is reachable",
+                inputSchema={
+                    "type": "object",
+                    "properties": {"node": NODE_PARAM},
+                    "required": ["node"],
+                },
+            ),
+            Tool(
+                name="fleet_status",
+                description="Get health summary of all nodes — sessions, states, idle times",
+                inputSchema={"type": "object", "properties": {}},
+            ),
+            Tool(
+                name="node_sessions",
+                description="List sessions on a specific remote node",
+                inputSchema={
+                    "type": "object",
+                    "properties": {"node": NODE_PARAM},
+                    "required": ["node"],
+                },
+            ),
         ]
 
     # ── Tool implementations ────────────────────────────────────
@@ -291,7 +388,10 @@ def create_mcp_server(config: ZpilotConfig | None = None) -> Server:
     @server.call_tool()
     async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
         try:
-            result = await _dispatch(name, arguments, config, detector, event_bus)
+            result = await _dispatch(
+                name, arguments, config, detector, event_bus,
+                registry, monitor,
+            )
             return [TextContent(type="text", text=result)]
         except Exception as e:
             return [TextContent(type="text", text=f"Error: {e}")]
@@ -305,10 +405,71 @@ async def _dispatch(
     config: ZpilotConfig,
     detector: PaneDetector,
     event_bus: EventBus,
+    registry: NodeRegistry | None = None,
+    monitor: Monitor | None = None,
 ) -> str:
     """Dispatch a tool call to the appropriate handler."""
 
-    if name == "list_sessions":
+    # ── Fleet management tools ──────────────────────────────────
+
+    if name == "list_nodes":
+        reg = registry or NodeRegistry()
+        lines = []
+        for node in reg.all():
+            transport = node.transport_type
+            host = node.host or "(local)"
+            labels = ", ".join(f"{k}={v}" for k, v in node.labels.items()) or "-"
+            lines.append(f"  {node.name}  [{transport}]  {host}  labels: {labels}")
+        return f"Nodes ({len(reg)}):\n" + "\n".join(lines)
+
+    elif name == "ping_node":
+        reg = registry or NodeRegistry()
+        node = reg.get(args["node"])
+        try:
+            alive = await node.transport.is_alive()
+            return f"{'✓' if alive else '✗'} {node.name}: {'reachable' if alive else 'unreachable'}"
+        except Exception as e:
+            return f"✗ {node.name}: {e}"
+
+    elif name == "fleet_status":
+        if monitor:
+            fleet = await monitor.poll_all()
+            lines = [fleet.summary(), ""]
+            for nh in fleet.nodes:
+                status = f"{'●' if nh.state.value == 'online' else '○'} {nh.name}: {nh.state.value}"
+                if nh.error:
+                    status += f" ({nh.error})"
+                if nh.sessions:
+                    status += f" — {nh.total_sessions} sessions ({nh.busy_count} busy, {nh.idle_count} idle)"
+                lines.append(status)
+            stuck = monitor.stuck_sessions()
+            if stuck:
+                lines.append(f"\n⚠ {len(stuck)} stuck session(s):")
+                for s in stuck:
+                    lines.append(f"  {s.node}:{s.session} idle {s.idle_seconds:.0f}s")
+            return "\n".join(lines)
+        return "Monitor not available."
+
+    elif name == "node_sessions":
+        reg = registry or NodeRegistry()
+        node = reg.get(args["node"])
+        if node.is_local:
+            sessions = await zellij.list_sessions()
+            if not sessions:
+                return f"No sessions on {node.name}."
+            lines = [f"  {s.name}" + (" (current)" if s.is_current else "") for s in sessions]
+            return f"Sessions on {node.name}:\n" + "\n".join(lines)
+        else:
+            result = await node.transport.exec(
+                "zellij list-sessions --no-formatting 2>/dev/null", timeout=15.0
+            )
+            if not result.ok or not result.stdout.strip():
+                return f"No sessions on {node.name} (or unreachable)."
+            return f"Sessions on {node.name}:\n" + result.stdout
+
+    # ── Original single-node tools (with remote node support) ────
+
+    elif name == "list_sessions":
         sessions = await zellij.list_sessions()
         if not sessions:
             return "No Zellij sessions found."
@@ -321,14 +482,34 @@ async def _dispatch(
     elif name == "create_session":
         session_name = args["name"]
         layout = args.get("layout")
+        node, sess = _parse_session(session_name, registry)
+        if node:
+            cmd = f"zellij --session {sess} &"
+            await node.transport.exec(cmd, timeout=10)
+            return f"Created session '{sess}' on {node.name}"
         await zellij.new_session(session_name, layout=layout)
         return f"Created session '{session_name}'"
 
     elif name == "kill_session":
+        node, sess = _parse_session(args["name"], registry)
+        if node:
+            await _remote_zellij(node, f"delete-session {sess} --force")
+            return f"Killed session '{sess}' on {node.name}"
         await zellij.kill_session(args["name"])
         return f"Killed session '{args['name']}'"
 
     elif name == "create_pane":
+        node, sess = _parse_session(args.get("session"), registry)
+        if node:
+            zj_args = f"--session {sess} action new-pane" if sess else "action new-pane"
+            if args.get("direction"):
+                zj_args += f" --direction {args['direction']}"
+            if args.get("floating"):
+                zj_args += " --floating"
+            if args.get("command"):
+                zj_args += f" -- {args['command']}"
+            await _remote_zellij(node, zj_args)
+            return f"Created pane on {node.name}:{sess or 'current'}"
         await zellij.new_pane(
             session=args.get("session"),
             name=args.get("name"),
@@ -339,6 +520,10 @@ async def _dispatch(
         return f"Created pane" + (f" '{args.get('name')}'" if args.get("name") else "")
 
     elif name == "read_pane":
+        node, sess = _parse_session(args.get("session"), registry)
+        if node:
+            content = await _remote_dump_pane(node, sess, full=args.get("full", False))
+            return content if content.strip() else "(empty pane)"
         content = await zellij.dump_pane(
             session=args.get("session"),
             full=args.get("full", False),
@@ -346,17 +531,38 @@ async def _dispatch(
         return content if content else "(empty pane)"
 
     elif name == "write_to_pane":
+        node, sess = _parse_session(args.get("session"), registry)
+        if node:
+            import shlex
+            text = args["text"]
+            escaped = shlex.quote(text)
+            zj_args = f"--session {sess} action write-chars {escaped}" if sess else f"action write-chars {escaped}"
+            await _remote_zellij(node, zj_args)
+            detector.record_input(f"{node.name}:{sess}" if sess else node.name, "focused")
+            return f"Sent {len(text)} chars to pane on {node.name}:{sess or 'current'}"
         await zellij.write_to_pane(args["text"], session=args.get("session"))
-        sess = args.get("session", "current")
-        detector.record_input(sess, "focused")
+        sess_key = args.get("session", "current")
+        detector.record_input(sess_key, "focused")
         return f"Sent {len(args['text'])} chars to pane"
 
     elif name == "run_in_pane":
+        node, sess = _parse_session(args.get("session"), registry)
+        if node:
+            import shlex
+            cmd = args["command"]
+            # Write the command text then press Enter
+            escaped = shlex.quote(cmd)
+            zj_args = f"--session {sess} action write-chars {escaped}" if sess else f"action write-chars {escaped}"
+            await _remote_zellij(node, zj_args)
+            enter_args = f"--session {sess} action write 10" if sess else "action write 10"
+            await _remote_zellij(node, enter_args)
+            detector.record_input(f"{node.name}:{sess}" if sess else node.name, "focused")
+            return f"Executed on {node.name}:{sess or 'current'}: {cmd}"
         await zellij.run_command_in_pane(
             args["command"], session=args.get("session")
         )
-        sess = args.get("session", "current")
-        detector.record_input(sess, "focused")
+        sess_key = args.get("session", "current")
+        detector.record_input(sess_key, "focused")
         return f"Executed: {args['command']}"
 
     elif name == "launch_copilot":
@@ -387,13 +593,29 @@ async def _dispatch(
         return f"Launched {agent_cmd} in {session}:{pane_name}"
 
     elif name == "check_status":
-        session = args["session"]
-        content = await zellij.dump_pane(session=session)
-        state = detector.detect(session=session, pane="focused", content=content)
-        idle_secs = detector.get_idle_seconds(session, "focused")
+        session_raw = args["session"]
+        node, sess = _parse_session(session_raw, registry)
+        if node:
+            try:
+                content = await _remote_dump_pane(node, sess, full=True)
+            except Exception as e:
+                return json.dumps({"session": session_raw, "state": "error", "error": str(e)})
+            state = detector.detect(session=session_raw, pane="focused", content=content)
+            idle_secs = detector.get_idle_seconds(session_raw, "focused")
+            last_lines = content.strip().splitlines()[-3:] if content.strip() else []
+            return json.dumps({
+                "session": session_raw,
+                "node": node.name,
+                "state": state.value,
+                "idle_seconds": round(idle_secs, 1),
+                "last_lines": last_lines,
+            }, indent=2)
+        content = await zellij.dump_pane(session=sess)
+        state = detector.detect(session=session_raw, pane="focused", content=content)
+        idle_secs = detector.get_idle_seconds(session_raw, "focused")
         last_lines = content.strip().splitlines()[-3:] if content.strip() else []
         return json.dumps({
-            "session": session,
+            "session": session_raw,
             "state": state.value,
             "idle_seconds": round(idle_secs, 1),
             "last_lines": last_lines,
@@ -446,18 +668,20 @@ async def _dispatch(
 
     elif name == "search_pane":
         import re
-        session = args["session"]
+        session_raw = args["session"]
         pattern = args["pattern"]
         ctx = args.get("context", 2)
-        # Get full scrollback
-        content = await zellij.dump_pane(session=session, full=True)
+        node, sess = _parse_session(session_raw, registry)
+        if node:
+            content = await _remote_dump_pane(node, sess, full=True)
+        else:
+            content = await zellij.dump_pane(session=sess, full=True)
         if not content:
             return "Pane is empty."
         all_lines = content.splitlines()
         try:
             regex = re.compile(pattern, re.IGNORECASE)
         except re.error:
-            # Fall back to literal search
             regex = re.compile(re.escape(pattern), re.IGNORECASE)
         matches = []
         for i, line in enumerate(all_lines):
@@ -470,36 +694,56 @@ async def _dispatch(
                     snippet.append(f"{marker} {j+1}: {all_lines[j]}")
                 matches.append("\n".join(snippet))
         if not matches:
-            return f"No matches for '{pattern}' in {session} scrollback ({len(all_lines)} lines searched)."
-        header = f"Found {len(matches)} match(es) in {session} ({len(all_lines)} lines):\n"
-        return header + "\n---\n".join(matches[:30])  # cap at 30 matches
+            node_label = f" on {node.name}" if node else ""
+            return f"No matches for '{pattern}' in {session_raw}{node_label} scrollback ({len(all_lines)} lines searched)."
+        header = f"Found {len(matches)} match(es) in {session_raw} ({len(all_lines)} lines):\n"
+        return header + "\n---\n".join(matches[:30])
 
     elif name == "get_output_history":
-        session = args["session"]
+        session_raw = args["session"]
         num_lines = args.get("lines", 50)
-        content = await zellij.dump_pane(session=session, full=True)
+        node, sess = _parse_session(session_raw, registry)
+        if node:
+            content = await _remote_dump_pane(node, sess, full=True)
+        else:
+            content = await zellij.dump_pane(session=sess, full=True)
         if not content:
             return "(empty pane)"
         all_lines = content.strip().splitlines()
         tail = all_lines[-num_lines:]
         total = len(all_lines)
-        header = f"Last {len(tail)} of {total} lines from {session}:\n"
+        header = f"Last {len(tail)} of {total} lines from {session_raw}:\n"
         numbered = [f"{total - len(tail) + i + 1}: {line}" for i, line in enumerate(tail)]
         return header + "\n".join(numbered)
 
     elif name == "send_keys":
-        session = args["session"]
+        session_raw = args["session"]
         keys = args["keys"]
+        node, sess = _parse_session(session_raw, registry)
+        if node:
+            results = []
+            for key_name in keys:
+                key_bytes = zellij.SPECIAL_KEYS.get(key_name)
+                if key_bytes is not None:
+                    for byte_val in key_bytes:
+                        zj_args = f"--session {sess} action write {byte_val}"
+                        await _remote_zellij(node, zj_args)
+                    results.append(f"✓ {key_name}")
+                else:
+                    available = ", ".join(sorted(zellij.SPECIAL_KEYS.keys()))
+                    results.append(f"✗ {key_name} (unknown — available: {available})")
+            detector.record_input(session_raw, "focused")
+            return f"Sent {len(keys)} key(s) to {session_raw}:\n" + "\n".join(results)
         results = []
         for key_name in keys:
-            ok = await zellij.send_special_key(key_name, session=session)
+            ok = await zellij.send_special_key(key_name, session=sess)
             if ok:
                 results.append(f"✓ {key_name}")
             else:
                 available = ", ".join(sorted(zellij.SPECIAL_KEYS.keys()))
                 results.append(f"✗ {key_name} (unknown — available: {available})")
-        detector.record_input(session, "focused")
-        return f"Sent {len(keys)} key(s) to {session}:\n" + "\n".join(results)
+        detector.record_input(session_raw, "focused")
+        return f"Sent {len(keys)} key(s) to {session_raw}:\n" + "\n".join(results)
 
     else:
         return f"Unknown tool: {name}"

@@ -213,17 +213,30 @@ All three UIs call the exact same MCP tools.
 ## CLI Interface
 
 ```bash
-zpilot serve              # start MCP server (stdio) -- primary entry point
+# ── Core ──
+zpilot serve              # start MCP server (stdio) — primary entry point
 zpilot serve-http         # start HTTP server for remote access (FastAPI+uvicorn)
-zpilot status             # one-shot fleet status
-zpilot nodes              # list configured nodes with ping status
-zpilot ping [node]        # ping one or all nodes
-zpilot new <node> <name> [cmd]  # create a new session on a node
-zpilot fleet              # fleet status overview
-zpilot config             # show configuration
-zpilot token-gen          # generate a new bearer token
-zpilot up                 # start background daemon
-zpilot down               # stop background daemon
+zpilot serve-http --tunnel  # start HTTP server + devtunnel (easiest remote setup)
+
+# ── Session Management ──
+zpilot up                 # start web dashboard + daemon in background
+zpilot down               # stop background services
+zpilot status             # one-shot session status check
+zpilot new <name> [cmd]   # create a new tracked Zellij session
+zpilot fleet              # fleet health check across all nodes
+
+# ── Node Management ──
+zpilot nodes              # list configured nodes with transport info
+zpilot ping <node>        # check connectivity to a specific node
+zpilot config             # show current configuration
+
+# ── Devtunnel ──
+zpilot tunnel-up          # create/reuse a devtunnel and print the public URL
+zpilot tunnel-down        # stop devtunnel hosting
+zpilot tunnel-status      # show tunnel status and URLs
+
+# ── Security ──
+zpilot token-gen          # generate a cryptographically secure bearer token
 ```
 
 ## Configuration
@@ -269,21 +282,24 @@ token = "your-secret-token-here"  # or use ZPILOT_HTTP_TOKEN env var
 ### `~/.config/zpilot/nodes.toml`
 
 ```toml
-# SSH transport (legacy -- works but requires SSH reachability)
+# ─── SSH transport (LEGACY — maintained for backward compatibility) ───
+# Requires direct SSH network access (firewall/VPN dependent).
+# Consider migrating to MCP transport below.
 [nodes.dandroid1-ssh]
 transport = "ssh"
 host = "dandroid1.internal"
 user = "danielp"
 labels = { os = "windows-wsl", gpu = "false" }
 
-# MCP/HTTP transport (preferred -- works through devtunnels)
+# ─── MCP/HTTP transport (RECOMMENDED — works through devtunnels) ───
+# No firewall/VPN needed. Built-in retry, circuit breaker, TLS.
 [nodes.dandroid1]
 transport = "mcp"
 host = "https://abc123-8222.usw2.devtunnels.ms"
 token = "shared-secret-token"
 labels = { os = "windows-wsl", gpu = "false" }
 
-# Local node is always implicit -- no config needed
+# Local node is always implicit — no config needed
 ```
 
 ## Security Model
@@ -329,24 +345,58 @@ zpilot/
       config.py           # Configuration loading (~/.config/zpilot/)
       daemon.py           # Background session watcher
       detector.py         # Idle/completion/error detection (PaneDetector)
+      devtunnel.py        # Azure devtunnel CLI wrapper (create, host, list)
       events.py           # Event bus (file-based JSONL)
       mcp_http.py         # FastAPI HTTP server (REST API + MCP endpoint)
-      mcp_server.py       # MCP server -- all tools, node-aware routing
+      mcp_server.py       # MCP server — all tools, node-aware routing
       models.py           # Data models: Pane, Session, Event, Health, etc.
       monitor.py          # Fleet health monitor (polls nodes)
       nodes.py            # Node registry (loads nodes.toml)
       notifications.py    # Notification adapters
+      shell_wrapper.py    # PTY fork with output logging, FIFO injection
       transport.py        # Transport ABC + Local/SSH/MCP implementations
       zellij.py           # Zellij CLI wrapper
+      tui/                # Textual-based TUI dashboard
+      web/                # Web dashboard (FastAPI + xterm.js + themes)
   tests/
+    conftest.py
+    test_cli.py
+    test_cli_runner.py
+    test_daemon.py
+    test_dashboard.py
     test_detector.py
+    test_devtunnel.py
     test_events.py
+    test_install_plugin.py
+    test_mcp.py
     test_mcp_http.py
+    test_models.py
     test_monitor.py
+    test_monitor_extended.py
     test_nodes.py
+    test_normalize.py
+    test_plugin_status.py
+    test_proxy_health.py
+    test_resilience.py
     test_transport.py
-    test_zellij.py
+    test_web_api.py
+    test_web_endpoints.py
+    test_web_extended.py
 ```
+
+## Transport Comparison
+
+| Feature | Local | SSH (legacy) | MCP/HTTP (recommended) |
+|---------|-------|--------------|------------------------|
+| **Setup** | Zero config | SSH keys + reachability | `serve-http` + bearer token |
+| **Network** | Same machine | Direct SSH access (firewall/VPN) | Any HTTP path (devtunnel OK) |
+| **Encryption** | N/A | SSH | TLS (devtunnel auto, or self-signed) |
+| **Auth** | N/A | SSH keys | Bearer token |
+| **Retry/resilience** | N/A | 2 retries on transient SSH errors | Exponential backoff + circuit breaker |
+| **File transfer** | `cp` | `scp` | Base64 over HTTP |
+| **WSL support** | N/A | `wsl_distro` + `wsl_user` | Transparent (zpilot runs inside WSL) |
+| **Internet traversal** | No | Requires VPN/port-forward | devtunnel (zero config) |
+| **Status** | Stable | Legacy (maintained) | Recommended |
 
 ## Dependencies
 
@@ -358,7 +408,7 @@ zpilot/
 - **textual** — TUI dashboard framework
 - **jinja2** — template rendering
 - **websockets** — WebSocket support
-- **cryptography** — token generation
+- **cryptography** — TLS certificate generation + token generation
 
 ## Roadmap
 
@@ -380,6 +430,22 @@ SSH and MCP transports, HTTP server, bearer-token auth, devtunnel support.
 - MCPTransport retry with exponential backoff (configurable max_retries, retry_delay)
 - `health_check_nodes()` in monitor.py — structured health checks
 - Health data wired into `fleet_status` tool response
+
+### Phase 6: TLS Encryption (done)
+- Auto-generated self-signed EC certificates for HTTPS
+- `verify_ssl`, `ca_cert`, `cert_fingerprint` options on MCPTransport
+- Web dashboard serves over HTTPS by default
+
+### Phase 7: Circuit Breaker & Resilience (done)
+- `CircuitBreaker` class in transport.py (CLOSED → OPEN → HALF_OPEN)
+- Configurable failure threshold and recovery timeout
+- Short-circuits requests to known-dead nodes
+
+### Phase 8: Devtunnel Integration (done)
+- `devtunnel.py` — create, host, list, inspect Azure devtunnels
+- CLI commands: `tunnel-up`, `tunnel-down`, `tunnel-status`
+- `serve-http --tunnel` — one-command remote access setup
+- Documented ACL setup and node configuration
 
 ### Future
 - Auto-discovery via sibling gossip protocol

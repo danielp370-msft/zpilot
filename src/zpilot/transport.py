@@ -152,10 +152,22 @@ class LocalTransport(Transport):
 
 
 class SSHTransport(Transport):
-    """Transport via SSH. Uses ~/.ssh/config for all connection details.
+    """Transport via SSH (legacy).
 
-    Supports ControlMaster for connection reuse — configure in your
-    ssh_config with ControlPath/ControlPersist for best performance.
+    .. deprecated::
+        SSH transport is maintained for backward compatibility but is no
+        longer the recommended path for new deployments.  It requires
+        direct SSH network access which is firewall/VPN dependent and
+        difficult to use across heterogeneous networks.
+
+        **Recommended alternative:** Use ``MCPTransport`` with an HTTP
+        endpoint (optionally exposed via Azure devtunnel) for simpler
+        setup, built-in retry/circuit-breaker resilience, and zero
+        firewall configuration.
+
+    Uses ~/.ssh/config for all connection details.  Supports
+    ControlMaster for connection reuse — configure in your ssh_config
+    with ControlPath/ControlPersist for best performance.
     """
 
     def __init__(
@@ -490,6 +502,12 @@ def create_transport(
     elif transport_type == "ssh":
         if not host:
             raise ValueError("SSH transport requires 'host'")
+        log.info(
+            "SSH transport selected for host '%s'. Consider migrating to "
+            "MCP transport (transport = \"mcp\") with serve-http + devtunnel "
+            "for easier connectivity and built-in resilience.",
+            host,
+        )
         return SSHTransport(
             host=host,
             user=opts.get("user"),

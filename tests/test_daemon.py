@@ -453,3 +453,89 @@ class TestDaemonRunPidFile:
         finally:
             dm.PID_DIR = orig_dir
             dm.PID_FILE = orig_file
+
+
+# ── Config reload (SIGHUP) ─────────────────────────────────────────
+
+class TestConfigReload:
+    def test_reload_updates_poll_interval(self, config):
+        from zpilot.daemon import Daemon
+
+        with patch("zpilot.daemon.create_adapter") as mock_ca:
+            mock_ca.return_value = MagicMock()
+            d = Daemon(config)
+            assert d.config.poll_interval == 0.1
+
+            new_config = ZpilotConfig(
+                poll_interval=5.0,
+                idle_threshold=30.0,
+                events_file=config.events_file,
+                notify_enabled=True,
+                notify_on=["error"],
+            )
+            with patch("zpilot.daemon.load_config", return_value=new_config):
+                d.reload_config()
+
+            assert d.config.poll_interval == 5.0
+            assert d.config.idle_threshold == 30.0
+            assert d.config.notify_enabled is True
+            assert d.config.notify_on == ["error"]
+
+    def test_reload_handles_error_gracefully(self, config):
+        from zpilot.daemon import Daemon
+
+        with patch("zpilot.daemon.create_adapter") as mock_ca:
+            mock_ca.return_value = MagicMock()
+            d = Daemon(config)
+            original_interval = d.config.poll_interval
+
+            with patch("zpilot.daemon.load_config", side_effect=FileNotFoundError("gone")):
+                d.reload_config()  # Should not raise
+
+            # Config should remain unchanged after failed reload
+            assert d.config.poll_interval == original_interval
+
+    @pytest.mark.asyncio
+    async def test_sighup_wired_in_run_daemon(self):
+        """Verify SIGHUP handler is registered by run_daemon."""
+        import signal
+        from zpilot.daemon import run_daemon
+
+        handlers = {}
+
+        def fake_add_handler(sig, cb):
+            handlers[sig] = cb
+
+        mock_loop = MagicMock()
+        mock_loop.add_signal_handler = fake_add_handler
+
+        config = ZpilotConfig(
+            poll_interval=0.1,
+            idle_threshold=5.0,
+            events_file="/dev/null",
+            notify_enabled=False,
+        )
+
+        with patch("zpilot.daemon.create_adapter") as mock_ca, \
+             patch("zpilot.daemon.is_daemon_running", return_value=None), \
+             patch("zpilot.daemon.write_pid_file"), \
+             patch("zpilot.daemon.remove_pid_file"), \
+             patch("zpilot.daemon.zellij") as mock_z, \
+             patch("asyncio.get_event_loop", return_value=mock_loop):
+            mock_ca.return_value = MagicMock()
+            mock_z.list_sessions = AsyncMock(return_value=[])
+
+            # run_daemon sets up handlers then calls daemon.run() which loops.
+            # We patch the Daemon to stop immediately.
+            with patch("zpilot.daemon.Daemon") as MockDaemon:
+                mock_d = MagicMock()
+                mock_d.run = AsyncMock()
+                mock_d.stop = MagicMock()
+                mock_d.reload_config = MagicMock()
+                MockDaemon.return_value = mock_d
+
+                await run_daemon(config)
+
+                assert signal.SIGHUP in handlers
+                assert signal.SIGTERM in handlers
+                assert signal.SIGINT in handlers

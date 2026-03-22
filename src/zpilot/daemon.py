@@ -192,6 +192,29 @@ class Daemon:
         except Exception as e:
             log.warning(f"Notification failed: {e}")
 
+    def reload_config(self) -> None:
+        """Reload configuration from disk (called on SIGHUP)."""
+        try:
+            new_config = load_config()
+            self.config.poll_interval = new_config.poll_interval
+            self.config.idle_threshold = new_config.idle_threshold
+            self.config.notify_enabled = new_config.notify_enabled
+            self.config.notify_on = new_config.notify_on
+            self.config.notify_adapter = new_config.notify_adapter
+            self.detector = PaneDetector(self.config)
+            self.notifier = create_adapter(self.config)
+            log.info(
+                f"Config reloaded (poll={self.config.poll_interval}s, "
+                f"idle_threshold={self.config.idle_threshold}s)"
+            )
+            self.event_bus.emit(Event(
+                event_type="info",
+                new_state="reloaded",
+                details="Configuration reloaded via SIGHUP",
+            ))
+        except Exception as e:
+            log.error(f"Config reload failed: {e}")
+
     async def run(self) -> None:
         """Main daemon loop."""
         # Check for already-running daemon
@@ -237,5 +260,6 @@ async def run_daemon(config: ZpilotConfig | None = None) -> None:
     loop = asyncio.get_event_loop()
     for sig in (signal.SIGINT, signal.SIGTERM):
         loop.add_signal_handler(sig, daemon.stop)
+    loop.add_signal_handler(signal.SIGHUP, daemon.reload_config)
 
     await daemon.run()

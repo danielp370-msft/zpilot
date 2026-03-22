@@ -210,12 +210,14 @@ class TestUpDownCommands:
 
         with patch("zpilot.cli.PID_DIR", pid_dir), \
              patch("zpilot.cli.ensure_config"), \
+             patch("zpilot.daemon.is_daemon_running", return_value=None), \
              patch("subprocess.Popen", return_value=mock_proc) as mock_popen, \
              patch("builtins.open", MagicMock()):
             result = runner.invoke(main, ["up", "--no-ssl"])
             assert result.exit_code == 0
             assert "zpilot is up" in result.output
-            assert "12345" in result.output
+            # Should have called Popen twice (daemon + web)
+            assert mock_popen.call_count == 2
 
     def test_up_already_running(self, runner, tmp_path):
         import os
@@ -241,15 +243,15 @@ class TestUpDownCommands:
     def test_down_stops_process(self, runner, tmp_path):
         pid_dir = tmp_path / "zpilot"
         pid_dir.mkdir()
-        pid_file = pid_dir / "web.pid"
-        pid_file.write_text("99999")
+        # Write both pid files
+        (pid_dir / "web.pid").write_text("99999")
+        (pid_dir / "zpilot.pid").write_text("99998")
 
         with patch("zpilot.cli.PID_DIR", pid_dir), \
              patch("os.kill") as mock_kill:
             result = runner.invoke(main, ["down"])
             assert result.exit_code == 0
-            # Either stopped or stale pidfile
-            assert "stopped" in result.output or "not running" in result.output
+            assert "stopped" in result.output
 
     def test_down_stale_pid(self, runner, tmp_path):
         pid_dir = tmp_path / "zpilot"
@@ -262,7 +264,8 @@ class TestUpDownCommands:
              patch("os.kill", side_effect=ProcessLookupError):
             result = runner.invoke(main, ["down"])
             assert result.exit_code == 0
-            assert "not running" in result.output or "stale" in result.output
+            # No stopped message (already gone) but cleaned up
+            assert not pid_file.exists()
 
 
 # ── fleet ────────────────────────────────────────────────────────────

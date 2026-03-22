@@ -277,6 +277,20 @@ def up(host: str, port: int, no_ssl: bool, open_browser: bool) -> None:
         except (ProcessLookupError, ValueError):
             web_pid_file.unlink(missing_ok=True)
 
+    # Start daemon if not already running
+    from .daemon import is_daemon_running as _daemon_running
+    daemon_pid_file = PID_DIR / "daemon.pid"
+    daemon_already = _daemon_running()
+    if not daemon_already:
+        daemon_cmd = [sys.executable, "-m", "zpilot.cli", "daemon", "start"]
+        daemon_proc = subprocess.Popen(
+            daemon_cmd,
+            stdout=open(PID_DIR / "daemon.log", "w"),
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
+        )
+        daemon_pid_file.write_text(str(daemon_proc.pid))
+
     # Start web server as a detached subprocess
     cmd = [sys.executable, "-m", "zpilot.web.app", "--host", host, "--port", str(port)]
     if no_ssl:
@@ -292,7 +306,11 @@ def up(host: str, port: int, no_ssl: bool, open_browser: bool) -> None:
     display_host = 'localhost' if host == '127.0.0.1' else host
     click.echo(f"⚡ zpilot is up!")
     click.echo(f"   Dashboard: {proto}://{display_host}:{port}")
-    click.echo(f"   PID:       {proc.pid}")
+    click.echo(f"   Web PID:   {proc.pid}")
+    if not daemon_already:
+        click.echo(f"   Daemon:    started")
+    else:
+        click.echo(f"   Daemon:    already running (PID {daemon_already})")
     click.echo(f"   Log:       {PID_DIR / 'web.log'}")
     click.echo(f"   Stop with: zpilot down")
 
@@ -303,27 +321,32 @@ def up(host: str, port: int, no_ssl: bool, open_browser: bool) -> None:
 
 @main.command()
 def down() -> None:
-    """Stop zpilot background services."""
+    """Stop zpilot background services (web + daemon)."""
     import os
     import signal
 
     PID_DIR.mkdir(parents=True, exist_ok=True)
-    web_pid_file = PID_DIR / "web.pid"
+    stopped = []
 
-    if not web_pid_file.exists():
-        click.echo("zpilot is not running (no pidfile found)")
-        return
+    for name, pid_filename in [("web", "web.pid"), ("daemon", "zpilot.pid")]:
+        pid_file = PID_DIR / pid_filename
+        if not pid_file.exists():
+            continue
+        try:
+            pid = int(pid_file.read_text().strip())
+            os.kill(pid, signal.SIGTERM)
+            stopped.append(f"{name} (PID {pid})")
+        except ProcessLookupError:
+            pass  # already gone
+        except ValueError:
+            pass
+        finally:
+            pid_file.unlink(missing_ok=True)
 
-    try:
-        pid = int(web_pid_file.read_text().strip())
-        os.kill(pid, signal.SIGTERM)
-        click.echo(f"⚡ zpilot stopped (PID {pid})")
-    except ProcessLookupError:
-        click.echo("zpilot was not running (stale pidfile)")
-    except ValueError:
-        click.echo("Invalid pidfile")
-    finally:
-        web_pid_file.unlink(missing_ok=True)
+    if stopped:
+        click.echo(f"⚡ zpilot stopped: {', '.join(stopped)}")
+    else:
+        click.echo("zpilot is not running")
 
 
 @main.command("notify-test")

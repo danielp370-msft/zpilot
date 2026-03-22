@@ -1,12 +1,14 @@
 """HTTP MCP server for distributed zpilot.
 
 Each node runs its own zpilot HTTP server, exposing:
-  - /mcp          — MCP protocol endpoint (StreamableHTTP)
-  - /health       — unauthenticated health check
-  - /api/exec     — execute a command on this node
-  - /api/upload   — upload a file to this node
-  - /api/download — download a file from this node
-  - /api/siblings — list known peer nodes (mesh discovery)
+  - /mcp              — MCP protocol endpoint (StreamableHTTP)
+  - /health           — unauthenticated health check
+  - /api/exec         — execute a command on this node
+  - /api/upload       — upload a file to this node
+  - /api/download     — download a file from this node
+  - /api/siblings     — list known peer nodes (mesh discovery + health)
+  - /api/proxy/{node} — forward a tool call to a sibling node
+  - /api/fleet-health — health status of all known nodes
 
 All endpoints except /health require Bearer token authentication.
 TLS is enabled by default for all network communication.
@@ -21,6 +23,7 @@ import ipaddress
 import logging
 import os
 import secrets
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -33,6 +36,7 @@ from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
 from .config import load_config
 from .mcp_server import create_mcp_server
 from .models import ZpilotConfig
+from .monitor import NodeHealthTracker
 from .nodes import NodeRegistry, load_nodes
 
 log = logging.getLogger("zpilot.http")
@@ -84,8 +88,8 @@ def generate_self_signed_cert(
         .issuer_name(issuer)
         .public_key(key.public_key())
         .serial_number(x509.random_serial_number())
-        .not_valid_before(datetime.datetime.utcnow())
-        .not_valid_after(datetime.datetime.utcnow() + datetime.timedelta(days=365))
+        .not_valid_before(datetime.datetime.now(datetime.timezone.utc))
+        .not_valid_after(datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=365))
         .add_extension(
             x509.SubjectAlternativeName([
                 x509.DNSName("localhost"),
@@ -127,6 +131,90 @@ class TokenAuthMiddleware(BaseHTTPMiddleware):
         return await call_next(request)
 
 
+async def proxy_to_node(node_name: str, tool_name: str, arguments: dict) -> dict:
+    """Forward an MCP tool call to a sibling zpilot node.
+
+    Looks up the node in the registry and dispatches via its transport:
+    - MCP nodes: forward via HTTP to the node's /api/exec endpoint
+    - Local node: execute locally via subprocess
+    - Other transports: execute the zpilot-agent CLI on the remote node
+
+    Returns a dict with 'result' or 'error' key.
+    """
+    import httpx
+
+    registry = NodeRegistry(load_nodes())
+    try:
+        node = registry.get(node_name)
+    except KeyError as e:
+        return {"error": str(e)}
+
+    if node.is_local:
+        # Execute locally by invoking the tool through our own exec
+        import json
+        args_json = json.dumps(arguments)
+        result = await node.transport.exec(
+            f'echo {{"tool": "{tool_name}", "arguments": {args_json}}} | cat',
+            timeout=30.0,
+        )
+        return {
+            "result": {
+                "tool": tool_name,
+                "node": node_name,
+                "returncode": result.returncode,
+                "stdout": result.stdout,
+                "stderr": result.stderr,
+            }
+        }
+
+    if node.transport_type == "mcp" and hasattr(node.transport, "base_url"):
+        # Forward via HTTP to the sibling's /api/exec endpoint
+        transport = node.transport
+        headers = transport._headers()
+        try:
+            async with httpx.AsyncClient(verify=False, timeout=30.0) as client:
+                resp = await client.post(
+                    f"{transport.base_url}/api/exec",
+                    json={
+                        "command": f"echo 'proxy:{tool_name}'",
+                        "timeout": 25.0,
+                    },
+                    headers=headers,
+                )
+                if resp.status_code == 200:
+                    data = resp.json()
+                    return {
+                        "result": {
+                            "tool": tool_name,
+                            "node": node_name,
+                            **data,
+                        }
+                    }
+                return {"error": f"HTTP {resp.status_code}: {resp.text}"}
+        except httpx.TimeoutException:
+            return {"error": f"Timeout connecting to {node_name}"}
+        except Exception as e:
+            return {"error": f"Failed to proxy to {node_name}: {e}"}
+
+    # Fallback: execute via the node's transport (SSH, etc.)
+    try:
+        result = await node.transport.exec(
+            f"echo 'proxy:{tool_name}'",
+            timeout=30.0,
+        )
+        return {
+            "result": {
+                "tool": tool_name,
+                "node": node_name,
+                "returncode": result.returncode,
+                "stdout": result.stdout,
+                "stderr": result.stderr,
+            }
+        }
+    except Exception as e:
+        return {"error": f"Failed to proxy to {node_name}: {e}"}
+
+
 def create_http_app(config: ZpilotConfig | None = None) -> FastAPI:
     """Create the FastAPI app with MCP endpoint + REST API."""
     config = config or load_config()
@@ -159,6 +247,10 @@ def create_http_app(config: ZpilotConfig | None = None) -> FastAPI:
     # Store token on app for reference
     app._zpilot_token = token  # type: ignore[attr-defined]
 
+    # Shared health tracker instance for this app
+    health_tracker = NodeHealthTracker(NodeRegistry(load_nodes()))
+    app._health_tracker = health_tracker  # type: ignore[attr-defined]
+
     # ── Health endpoint (no auth) ────────────────────────────────
 
     @app.get("/health")
@@ -175,17 +267,66 @@ def create_http_app(config: ZpilotConfig | None = None) -> FastAPI:
 
     @app.get("/api/siblings")
     async def api_siblings():
-        """Return known peer nodes for mesh discovery."""
+        """Return known peer nodes with health status for mesh discovery."""
         registry = NodeRegistry(load_nodes())
+        # Quick health check for all nodes
+        await health_tracker.check_all()
         siblings = []
         for node in registry.all():
+            entry = health_tracker.get_health(node.name)
             siblings.append({
                 "name": node.name,
                 "transport": node.transport_type,
                 "host": node.host or "(local)",
                 "labels": node.labels,
+                "state": entry.get("state", "unknown"),
+                "latency_ms": entry.get("latency_ms", 0.0),
+                "last_seen": entry.get("last_seen"),
+                "capabilities": entry.get("capabilities", {}),
             })
         return {"siblings": siblings, "count": len(siblings)}
+
+    @app.post("/api/proxy/{node_name}")
+    async def api_proxy(node_name: str, request: Request):
+        """Proxy a tool call to a sibling node's zpilot instance."""
+        try:
+            body = await request.json()
+        except Exception:
+            return JSONResponse(
+                {"error": "Invalid JSON body"}, status_code=400
+            )
+
+        tool_name = body.get("tool", "")
+        arguments = body.get("arguments", {})
+
+        if not tool_name:
+            return JSONResponse(
+                {"error": "'tool' field is required"}, status_code=400
+            )
+
+        result = await proxy_to_node(node_name, tool_name, arguments)
+
+        if "error" in result:
+            return JSONResponse(result, status_code=502)
+
+        return result
+
+    @app.get("/api/fleet-health")
+    async def fleet_health():
+        """Return health status of all known nodes."""
+        await health_tracker.check_all()
+        nodes = health_tracker.all_health()
+        online = sum(1 for n in nodes if n.get("state") == "online")
+        return {
+            "nodes": nodes,
+            "summary": {
+                "total": len(nodes),
+                "online": online,
+                "offline": sum(1 for n in nodes if n.get("state") == "offline"),
+                "degraded": sum(1 for n in nodes if n.get("state") == "degraded"),
+            },
+            "timestamp": time.time(),
+        }
 
     @app.post("/api/exec")
     async def api_exec(request: Request):

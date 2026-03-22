@@ -4,8 +4,9 @@ version = "0.1.0"
 edition = "2021"
 description = "Zellij WASM plugin for zpilot terminal orchestration"
 
-[lib]
-crate-type = ["cdylib"]
+[[bin]]
+name = "zpilot_zellij_plugin"
+path = "src/main.rs"
 
 [dependencies]
 zellij-tile = "0.41.0"

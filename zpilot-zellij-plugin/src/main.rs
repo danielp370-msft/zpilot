@@ -16,34 +16,40 @@ struct ZpilotPlugin {
     daemon_url: String,
     /// Auth token for daemon API
     auth_token: String,
-    /// Last known pane info keyed by pane_id
-    panes: BTreeMap<u32, PaneInfo>,
+    /// Last known pane info keyed by (pane_id, is_plugin)
+    panes: BTreeMap<(u32, bool), PaneInfoReport>,
     /// Whether we've completed initial setup
     initialized: bool,
     /// Plugin's own pane ID
     own_pane_id: Option<u32>,
     /// Pending commands to write to panes (pane_id -> commands)
     pending_writes: Vec<PaneWrite>,
+    /// Timer tick counter for diagnostics
+    tick_count: u64,
 }
 
 #[derive(Clone, Debug, Serialize)]
-struct PaneInfo {
+struct PaneInfoReport {
     pane_id: u32,
+    is_plugin: bool,
     title: String,
     is_focused: bool,
+    is_floating: bool,
     exit_status: Option<i32>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
 struct PaneWrite {
     pane_id: u32,
+    #[serde(default)]
+    is_plugin: bool,
     text: String,
 }
 
 #[derive(Serialize)]
 struct StatusReport {
     session_name: String,
-    panes: Vec<PaneInfo>,
+    panes: Vec<PaneInfoReport>,
     plugin_version: &'static str,
 }
 
@@ -66,12 +72,22 @@ impl ZellijPlugin for ZpilotPlugin {
             .cloned()
             .unwrap_or_default();
 
-        // Subscribe to relevant events
+        // Request permissions needed for our operations
+        request_permission(&[
+            PermissionType::ReadApplicationState,
+            PermissionType::ChangeApplicationState,
+            PermissionType::WriteToStdin,
+            PermissionType::WebAccess,
+        ]);
+
+        // Subscribe to relevant events (including PermissionRequestResult and WebRequestResult)
         subscribe(&[
             EventType::PaneUpdate,
             EventType::TabUpdate,
             EventType::SessionUpdate,
             EventType::Timer,
+            EventType::PermissionRequestResult,
+            EventType::WebRequestResult,
         ]);
 
         // Start periodic timer for status reporting
@@ -86,6 +102,7 @@ impl ZellijPlugin for ZpilotPlugin {
 
         match event {
             Event::PaneUpdate(pane_manifest) => {
+                eprintln!("[zpilot] PaneUpdate received!");
                 self.handle_pane_update(pane_manifest);
                 should_render = true;
             }
@@ -95,11 +112,30 @@ impl ZellijPlugin for ZpilotPlugin {
             Event::SessionUpdate(..) => {
                 // Session list changed — could report to daemon
             }
+            Event::PermissionRequestResult(status) => {
+                eprintln!("[zpilot] Permission request result: {:?}", status);
+            }
             Event::Timer(_elapsed) => {
+                self.tick_count += 1;
                 self.report_status();
+                self.poll_commands();
                 self.process_pending_writes();
                 // Re-arm timer
                 set_timeout(POLL_INTERVAL_SECS);
+            }
+            Event::WebRequestResult(_status, _headers, body, context) => {
+                // Handle responses from our HTTP requests
+                let req_type = context.get("type").map(|s| s.as_str()).unwrap_or("");
+                match req_type {
+                    "poll_commands" => {
+                        if let Ok(body_str) = std::str::from_utf8(&body) {
+                            self.handle_command_response(body_str);
+                            // Execute writes immediately (don't wait for next timer tick)
+                            self.process_pending_writes();
+                        }
+                    }
+                    _ => {} // status_report responses are fire-and-forget
+                }
             }
             _ => {}
         }
@@ -132,13 +168,15 @@ impl ZpilotPlugin {
 
         for (_tab_idx, pane_list) in &manifest.panes {
             for pane in pane_list {
-                let info = PaneInfo {
+                let info = PaneInfoReport {
                     pane_id: pane.id,
+                    is_plugin: pane.is_plugin,
                     title: pane.title.clone(),
                     is_focused: pane.is_focused,
+                    is_floating: pane.is_floating,
                     exit_status: pane.exit_status,
                 };
-                self.panes.insert(pane.id, info);
+                self.panes.insert((pane.id, pane.is_plugin), info);
             }
         }
     }
@@ -148,10 +186,6 @@ impl ZpilotPlugin {
     }
 
     fn report_status(&self) {
-        if self.panes.is_empty() {
-            return;
-        }
-
         let report = StatusReport {
             session_name: String::from("zellij"), // Zellij doesn't expose session name to plugins
             panes: self.panes.values().cloned().collect(),
@@ -192,7 +226,46 @@ impl ZpilotPlugin {
 
     fn process_pending_writes(&mut self) {
         for pw in self.pending_writes.drain(..) {
-            write_to_pane_id(pw.text.into_bytes(), PaneId::Terminal(pw.pane_id));
+            let pane_id = if pw.is_plugin {
+                PaneId::Plugin(pw.pane_id)
+            } else {
+                PaneId::Terminal(pw.pane_id)
+            };
+            write_to_pane_id(pw.text.into_bytes(), pane_id);
+        }
+    }
+
+    fn poll_commands(&self) {
+        let url = format!("{}/api/plugin-commands", self.daemon_url);
+        let headers = BTreeMap::new();
+
+        web_request(
+            &url,
+            HttpVerb::Get,
+            headers,
+            vec![],
+            vec![("type".to_string(), "poll_commands".to_string())]
+                .into_iter()
+                .collect(),
+        );
+    }
+
+    fn handle_command_response(&mut self, body: &str) {
+        #[derive(Deserialize)]
+        struct CommandsResponse {
+            commands: Vec<PaneWrite>,
+        }
+
+        match serde_json::from_str::<CommandsResponse>(body) {
+            Ok(resp) => {
+                if !resp.commands.is_empty() {
+                    eprintln!("[zpilot] Received {} commands", resp.commands.len());
+                    self.pending_writes.extend(resp.commands);
+                }
+            }
+            Err(e) => {
+                eprintln!("[zpilot] Failed to parse commands: {}", e);
+            }
         }
     }
 }

@@ -17,7 +17,7 @@ from .detector import PaneDetector
 from .events import EventBus
 from .models import PaneState, ZpilotConfig
 from .nodes import Node, NodeRegistry, load_nodes
-from .monitor import Monitor, health_check_nodes
+from .monitor import Monitor, NodeHealthTracker, health_check_nodes
 
 log = logging.getLogger("zpilot.mcp")
 
@@ -86,6 +86,7 @@ def create_mcp_server(config: ZpilotConfig | None = None) -> Server:
     event_bus = EventBus(config.events_file)
     registry = NodeRegistry(load_nodes())
     monitor = Monitor(registry, config, event_bus)
+    health_tracker = NodeHealthTracker(registry)
 
     # Common node param schema fragment
     NODE_PARAM = {
@@ -386,6 +387,11 @@ def create_mcp_server(config: ZpilotConfig | None = None) -> Server:
                 description="List known peer nodes (for mesh discovery). Returns node names, transport types, and labels.",
                 inputSchema={"type": "object", "properties": {}},
             ),
+            Tool(
+                name="fleet_health",
+                description="Get health summary of all nodes — latency, state, last_seen",
+                inputSchema={"type": "object", "properties": {}},
+            ),
         ]
 
     # ── Tool implementations ────────────────────────────────────
@@ -395,7 +401,7 @@ def create_mcp_server(config: ZpilotConfig | None = None) -> Server:
         try:
             result = await _dispatch(
                 name, arguments, config, detector, event_bus,
-                registry, monitor,
+                registry, monitor, health_tracker,
             )
             return [TextContent(type="text", text=result)]
         except Exception as e:
@@ -412,6 +418,7 @@ async def _dispatch(
     event_bus: EventBus,
     registry: NodeRegistry | None = None,
     monitor: Monitor | None = None,
+    health_tracker: NodeHealthTracker | None = None,
 ) -> str:
     """Dispatch a tool call to the appropriate handler."""
 
@@ -477,6 +484,35 @@ async def _dispatch(
             siblings.append(info)
         import json as _json
         return _json.dumps({"siblings": siblings, "count": len(siblings)}, indent=2)
+
+    elif name == "fleet_health":
+        tracker = health_tracker or NodeHealthTracker(registry or NodeRegistry())
+        health_data = await tracker.check_all()
+        nodes_list = tracker.all_health()
+        lines = []
+        online = sum(1 for n in nodes_list if n.get("state") == "online")
+        total = len(nodes_list)
+        lines.append(f"Fleet Health: {online}/{total} nodes online")
+        lines.append("")
+        for n in nodes_list:
+            icon = "●" if n.get("state") == "online" else "◌" if n.get("state") == "degraded" else "○"
+            line = f"  {icon} {n['name']}: {n.get('state', 'unknown')}"
+            lat = n.get("latency_ms", 0)
+            if lat:
+                line += f" [{lat:.0f}ms]"
+            last_seen = n.get("last_seen")
+            if last_seen:
+                import time as _time
+                ago = _time.time() - last_seen
+                if ago < 60:
+                    line += f" (seen {ago:.0f}s ago)"
+                else:
+                    line += f" (seen {ago / 60:.0f}m ago)"
+            err = n.get("error")
+            if err:
+                line += f" ⚠ {err}"
+            lines.append(line)
+        return "\n".join(lines)
 
     elif name == "node_sessions":
         reg = registry or NodeRegistry()

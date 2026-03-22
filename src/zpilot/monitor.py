@@ -244,3 +244,160 @@ async def health_check_nodes(
             "error": error,
         }
     return results
+
+
+class NodeHealthTracker:
+    """Periodically checks node health via /health endpoint and tracks latency.
+
+    Maintains per-node state with automatic online/offline transitions
+    based on configurable failure thresholds.
+    """
+
+    def __init__(
+        self,
+        registry: NodeRegistry,
+        *,
+        check_interval: float = 30.0,
+        offline_threshold: int = 3,
+        degraded_threshold: int = 1,
+    ):
+        self.registry = registry
+        self.check_interval = check_interval
+        self.offline_threshold = offline_threshold
+        self.degraded_threshold = degraded_threshold
+        self._running = False
+        # Per-node health data: node_name → {...}
+        self._health: dict[str, dict] = {}
+
+    def _init_node(self, name: str) -> dict:
+        """Create default health entry for a node."""
+        entry = {
+            "state": "unknown",
+            "latency_ms": 0.0,
+            "last_seen": None,
+            "consecutive_failures": 0,
+            "last_check": None,
+            "error": None,
+            "capabilities": {},
+        }
+        self._health[name] = entry
+        return entry
+
+    async def check_node(self, node: Node) -> dict:
+        """Ping a single node's /health endpoint and update tracking state."""
+        entry = self._health.get(node.name) or self._init_node(node.name)
+
+        if node.is_local:
+            # Local node is always online
+            entry.update({
+                "state": "online",
+                "latency_ms": 0.0,
+                "last_seen": time.time(),
+                "consecutive_failures": 0,
+                "last_check": time.time(),
+                "error": None,
+            })
+            return entry
+
+        t0 = time.monotonic()
+        try:
+            alive = await node.transport.is_alive()
+            latency_ms = round((time.monotonic() - t0) * 1000, 1)
+
+            if alive:
+                entry["latency_ms"] = latency_ms
+                entry["last_seen"] = time.time()
+                entry["consecutive_failures"] = 0
+                entry["error"] = None
+                entry["state"] = "online"
+                # Try to fetch capabilities from health response if MCP transport
+                if node.transport_type == "mcp":
+                    caps = await self._fetch_capabilities(node)
+                    if caps:
+                        entry["capabilities"] = caps
+            else:
+                entry["consecutive_failures"] += 1
+                entry["error"] = "health check returned not alive"
+                entry["latency_ms"] = latency_ms
+        except Exception as e:
+            latency_ms = round((time.monotonic() - t0) * 1000, 1)
+            entry["consecutive_failures"] += 1
+            entry["error"] = str(e)
+            entry["latency_ms"] = latency_ms
+
+        entry["last_check"] = time.time()
+
+        # State transitions
+        failures = entry["consecutive_failures"]
+        if failures >= self.offline_threshold:
+            entry["state"] = "offline"
+        elif failures >= self.degraded_threshold:
+            entry["state"] = "degraded"
+
+        self._health[node.name] = entry
+        return entry
+
+    async def _fetch_capabilities(self, node: Node) -> dict:
+        """Fetch extended health info from an MCP node's /health endpoint."""
+        try:
+            import httpx
+            transport = node.transport
+            if not hasattr(transport, "base_url"):
+                return {}
+            async with httpx.AsyncClient(verify=False, timeout=5.0) as client:
+                resp = await client.get(f"{transport.base_url}/health")
+                if resp.status_code == 200:
+                    data = resp.json()
+                    return {
+                        k: v for k, v in data.items()
+                        if k not in ("status",)
+                    }
+        except Exception:
+            pass
+        return {}
+
+    async def check_all(self) -> dict[str, dict]:
+        """Check health of all nodes in the registry."""
+        for node in self.registry.all():
+            await self.check_node(node)
+        return dict(self._health)
+
+    def get_health(self, node_name: str | None = None) -> dict:
+        """Get current health data. If node_name given, return that node's data."""
+        if node_name:
+            if node_name in self._health:
+                return self._health[node_name]
+            return {"name": node_name, "state": "unknown", "latency_ms": 0.0,
+                    "last_seen": None, "consecutive_failures": 0,
+                    "last_check": None, "error": None, "capabilities": {}}
+        return dict(self._health)
+
+    def all_health(self) -> list[dict]:
+        """Return health data for all tracked nodes as a list."""
+        result = []
+        for node in self.registry.all():
+            if node.name in self._health:
+                entry = self._health[node.name]
+            else:
+                entry = {"state": "unknown", "latency_ms": 0.0,
+                         "last_seen": None, "consecutive_failures": 0,
+                         "last_check": None, "error": None, "capabilities": {}}
+            result.append({"name": node.name, **entry})
+        return result
+
+    async def run(self) -> None:
+        """Periodically check all nodes."""
+        self._running = True
+        log.info(
+            "NodeHealthTracker started (interval=%.0fs, offline_threshold=%d)",
+            self.check_interval, self.offline_threshold,
+        )
+        while self._running:
+            try:
+                await self.check_all()
+            except Exception as e:
+                log.error("NodeHealthTracker error: %s", e)
+            await asyncio.sleep(self.check_interval)
+
+    def stop(self) -> None:
+        self._running = False

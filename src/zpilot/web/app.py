@@ -316,6 +316,27 @@ async def api_plugin_status_get():
     return _plugin_status
 
 
+# ── Plugin command queue (daemon → plugin) ────────────────────────────
+_plugin_commands: list[dict] = []
+
+
+@app.post("/api/plugin-commands")
+async def api_plugin_commands_post(request: Request):
+    """Queue a command for the plugin to execute (e.g., write to pane)."""
+    body = await request.json()
+    _plugin_commands.append(body)
+    return {"status": "queued", "queue_length": len(_plugin_commands)}
+
+
+@app.get("/api/plugin-commands")
+async def api_plugin_commands_get():
+    """Plugin polls this to get pending commands. Drains the queue."""
+    global _plugin_commands
+    commands = _plugin_commands[:]
+    _plugin_commands = []
+    return {"commands": commands}
+
+
 @app.get("/api/stream")
 async def event_stream():
     """SSE endpoint for live event updates with built-in state change detection."""
@@ -422,8 +443,8 @@ def _ensure_self_signed_cert():
         .issuer_name(issuer)
         .public_key(key.public_key())
         .serial_number(x509.random_serial_number())
-        .not_valid_before(datetime.datetime.utcnow())
-        .not_valid_after(datetime.datetime.utcnow() + datetime.timedelta(days=365))
+        .not_valid_before(datetime.datetime.now(datetime.timezone.utc))
+        .not_valid_after(datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=365))
         .add_extension(
             x509.SubjectAlternativeName([
                 x509.DNSName("localhost"),

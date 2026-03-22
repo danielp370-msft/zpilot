@@ -6,10 +6,54 @@ import asyncio
 import logging
 import os
 import shlex
+import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 
 log = logging.getLogger("zpilot.transport")
+
+
+class CircuitBreaker:
+    """Simple circuit breaker for transport resilience.
+
+    States: CLOSED (normal) -> OPEN (failing, reject requests) -> HALF_OPEN (try one)
+    """
+
+    CLOSED = "closed"
+    OPEN = "open"
+    HALF_OPEN = "half_open"
+
+    def __init__(self, failure_threshold: int = 5, recovery_timeout: float = 30.0):
+        self.failure_threshold = failure_threshold
+        self.recovery_timeout = recovery_timeout
+        self.state = self.CLOSED
+        self.failure_count = 0
+        self.last_failure_time = 0.0
+
+    def record_success(self):
+        self.failure_count = 0
+        self.state = self.CLOSED
+
+    def record_failure(self):
+        self.failure_count += 1
+        self.last_failure_time = time.monotonic()
+        if self.failure_count >= self.failure_threshold:
+            self.state = self.OPEN
+
+    def allow_request(self) -> bool:
+        if self.state == self.CLOSED:
+            return True
+        if self.state == self.OPEN:
+            if time.monotonic() - self.last_failure_time >= self.recovery_timeout:
+                self.state = self.HALF_OPEN
+                return True
+            return False
+        # HALF_OPEN: allow one request
+        return True
+
+    @property
+    def is_open(self) -> bool:
+        return self.state == self.OPEN
 
 
 @dataclass
@@ -157,7 +201,43 @@ class SSHTransport(Transport):
             return f"wsl -d {self.wsl_distro} {user_flag}-- bash -lc '{escaped}'"
         return command
 
+    # Transient SSH errors worth retrying
+    _SSH_TRANSIENT_ERRORS = (
+        "Connection refused",
+        "Connection reset",
+        "Connection timed out",
+        "No route to host",
+    )
+
     async def exec(self, command: str, timeout: float = 30.0, force_pty: bool = False) -> ExecResult:
+        max_ssh_retries = 2
+        ssh_retry_delay = 1.0
+
+        for attempt in range(max_ssh_retries + 1):
+            result = await self._exec_once(command, timeout, force_pty)
+            # Retry on SSH connection failure (exit code 255) or transient errors
+            if self._is_transient_ssh_failure(result) and attempt < max_ssh_retries:
+                log.debug(
+                    "SSH transient failure on %s (attempt %d/%d): %s",
+                    self.host, attempt + 1, max_ssh_retries + 1, result.stderr.strip(),
+                )
+                await asyncio.sleep(ssh_retry_delay)
+                continue
+            return result
+        return result  # unreachable but satisfies type checkers
+
+    def _is_transient_ssh_failure(self, result: ExecResult) -> bool:
+        """Check if an SSH result indicates a transient connection failure."""
+        if result.returncode == 255:
+            return True
+        if result.returncode != 0:
+            stderr = result.stderr
+            for pattern in self._SSH_TRANSIENT_ERRORS:
+                if pattern in stderr:
+                    return True
+        return False
+
+    async def _exec_once(self, command: str, timeout: float = 30.0, force_pty: bool = False) -> ExecResult:
         wrapped = self._wrap_command(command)
         ssh_cmd = self._ssh_args() + [wrapped]
         if force_pty:
@@ -230,6 +310,10 @@ class MCPTransport(Transport):
     Includes automatic retry with exponential backoff for resilience against
     transient network failures. Configure via max_retries and retry_delay.
 
+    A circuit breaker prevents wasting time on known-dead nodes: after
+    failure_threshold consecutive failures, requests are short-circuited
+    until recovery_timeout elapses.
+
     TLS verification can be controlled via verify_ssl and ca_cert parameters.
     For self-signed certs, set verify_ssl=False or pin the CA with ca_cert.
     """
@@ -244,6 +328,8 @@ class MCPTransport(Transport):
         verify_ssl: bool = False,
         ca_cert: str | None = None,
         cert_fingerprint: str | None = None,
+        circuit_failure_threshold: int = 5,
+        circuit_recovery_timeout: float = 30.0,
     ):
         # url should be the base URL like "https://host:8222"
         # Strip trailing /mcp if present
@@ -255,6 +341,10 @@ class MCPTransport(Transport):
         self.verify_ssl = verify_ssl
         self.ca_cert = ca_cert
         self.cert_fingerprint = cert_fingerprint
+        self._circuit = CircuitBreaker(
+            failure_threshold=circuit_failure_threshold,
+            recovery_timeout=circuit_recovery_timeout,
+        )
 
     @property
     def _verify(self) -> str | bool:
@@ -269,58 +359,88 @@ class MCPTransport(Transport):
             headers["Authorization"] = f"Bearer {self.token}"
         return headers
 
-    async def exec(self, command: str, timeout: float = 30.0, **kwargs) -> ExecResult:
+    async def _retry_request(self, coro_factory, operation: str = "request"):
+        """Execute an async HTTP request with retry and exponential backoff.
+
+        coro_factory: callable that takes an httpx.AsyncClient and returns a coroutine.
+        Raises ConnectionError on exhausted retries.
+        """
         import httpx
+
+        if not self._circuit.allow_request():
+            raise ConnectionError(
+                f"{operation} rejected by circuit breaker (node unreachable)"
+            )
+
         last_error = ""
         for attempt in range(self.max_retries):
             try:
                 async with httpx.AsyncClient(verify=self._verify) as client:
-                    resp = await client.post(
-                        f"{self.base_url}/api/exec",
-                        json={"command": command, "timeout": timeout},
-                        headers=self._headers(),
-                        timeout=timeout + 10,  # extra buffer for network
-                    )
-                    if resp.status_code == 401:
-                        return ExecResult(-1, "", "Authentication failed (401)")
-                    resp.raise_for_status()
-                    data = resp.json()
-                    return ExecResult(
-                        returncode=data.get("returncode", -1),
-                        stdout=data.get("stdout", ""),
-                        stderr=data.get("stderr", ""),
-                    )
+                    result = await coro_factory(client)
+                    self._circuit.record_success()
+                    return result
             except httpx.TimeoutException:
-                last_error = "HTTP request timed out"
+                last_error = f"{operation} timed out"
+            except httpx.ConnectError as e:
+                last_error = f"{operation} connection failed: {e}"
+            except httpx.RemoteProtocolError as e:
+                last_error = f"{operation} protocol error: {e}"
             except Exception as e:
-                last_error = f"MCPTransport error: {e}"
-            # Exponential backoff before retry
+                last_error = f"{operation} error: {e}"
+            self._circuit.record_failure()
             if attempt < self.max_retries - 1:
                 delay = self.retry_delay * (2 ** attempt)
                 await asyncio.sleep(delay)
-        return ExecResult(-1, "", f"{last_error} (after {self.max_retries} attempts)")
+        raise ConnectionError(f"{last_error} (after {self.max_retries} attempts)")
+
+    async def exec(self, command: str, timeout: float = 30.0, **kwargs) -> ExecResult:
+        import httpx
+
+        async def _do(client: httpx.AsyncClient):
+            resp = await client.post(
+                f"{self.base_url}/api/exec",
+                json={"command": command, "timeout": timeout},
+                headers=self._headers(),
+                timeout=timeout + 10,
+            )
+            if resp.status_code == 401:
+                return ExecResult(-1, "", "Authentication failed (401)")
+            resp.raise_for_status()
+            data = resp.json()
+            return ExecResult(
+                returncode=data.get("returncode", -1),
+                stdout=data.get("stdout", ""),
+                stderr=data.get("stderr", ""),
+            )
+
+        try:
+            return await self._retry_request(_do, "exec")
+        except ConnectionError as e:
+            return ExecResult(-1, "", str(e))
 
     async def is_alive(self) -> bool:
         import httpx
-        for attempt in range(self.max_retries):
-            try:
-                async with httpx.AsyncClient(verify=self._verify) as client:
-                    resp = await client.get(
-                        f"{self.base_url}/health",
-                        timeout=10.0,
-                    )
-                    return resp.status_code == 200
-            except Exception:
-                if attempt < self.max_retries - 1:
-                    await asyncio.sleep(self.retry_delay * (2 ** attempt))
-        return False
+
+        async def _do(client: httpx.AsyncClient):
+            resp = await client.get(
+                f"{self.base_url}/health",
+                timeout=10.0,
+            )
+            return resp.status_code == 200
+
+        try:
+            return await self._retry_request(_do, "health")
+        except ConnectionError:
+            return False
 
     async def upload(self, local_path: str, remote_path: str) -> None:
         import base64
         import httpx
+
         with open(local_path, "rb") as f:
             content = base64.b64encode(f.read()).decode()
-        async with httpx.AsyncClient(verify=self._verify) as client:
+
+        async def _do(client: httpx.AsyncClient):
             resp = await client.post(
                 f"{self.base_url}/api/upload",
                 json={"path": remote_path, "content": content},
@@ -330,10 +450,16 @@ class MCPTransport(Transport):
             if resp.status_code != 200:
                 raise IOError(f"Upload failed: {resp.text}")
 
+        try:
+            await self._retry_request(_do, "upload")
+        except ConnectionError as e:
+            raise IOError(str(e)) from e
+
     async def download(self, remote_path: str, local_path: str) -> None:
         import base64
         import httpx
-        async with httpx.AsyncClient(verify=self._verify) as client:
+
+        async def _do(client: httpx.AsyncClient):
             resp = await client.get(
                 f"{self.base_url}/api/download",
                 params={"path": remote_path},
@@ -346,6 +472,11 @@ class MCPTransport(Transport):
             content = base64.b64decode(data["content"])
             with open(local_path, "wb") as f:
                 f.write(content)
+
+        try:
+            await self._retry_request(_do, "download")
+        except ConnectionError as e:
+            raise IOError(str(e)) from e
 
 
 def create_transport(

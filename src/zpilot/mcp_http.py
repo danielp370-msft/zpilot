@@ -140,8 +140,10 @@ async def proxy_to_node(node_name: str, tool_name: str, arguments: dict) -> dict
     - Other transports: execute the zpilot-agent CLI on the remote node
 
     Returns a dict with 'result' or 'error' key.
+    On unreachable nodes, returns an error with 'unreachable' flag.
     """
     import httpx
+    from .transport import CircuitBreaker
 
     registry = NodeRegistry(load_nodes())
     try:
@@ -168,8 +170,13 @@ async def proxy_to_node(node_name: str, tool_name: str, arguments: dict) -> dict
         }
 
     if node.transport_type == "mcp" and hasattr(node.transport, "base_url"):
-        # Forward via HTTP to the sibling's /api/exec endpoint
         transport = node.transport
+        # Check circuit breaker if available
+        if hasattr(transport, "_circuit") and not transport._circuit.allow_request():
+            return {
+                "error": f"Node '{node_name}' is unreachable (circuit breaker open)",
+                "unreachable": True,
+            }
         headers = transport._headers()
         try:
             async with httpx.AsyncClient(verify=False, timeout=30.0) as client:
@@ -183,6 +190,8 @@ async def proxy_to_node(node_name: str, tool_name: str, arguments: dict) -> dict
                 )
                 if resp.status_code == 200:
                     data = resp.json()
+                    if hasattr(transport, "_circuit"):
+                        transport._circuit.record_success()
                     return {
                         "result": {
                             "tool": tool_name,
@@ -190,10 +199,26 @@ async def proxy_to_node(node_name: str, tool_name: str, arguments: dict) -> dict
                             **data,
                         }
                     }
+                if hasattr(transport, "_circuit"):
+                    transport._circuit.record_failure()
                 return {"error": f"HTTP {resp.status_code}: {resp.text}"}
         except httpx.TimeoutException:
-            return {"error": f"Timeout connecting to {node_name}"}
+            if hasattr(transport, "_circuit"):
+                transport._circuit.record_failure()
+            return {
+                "error": f"Timeout connecting to node '{node_name}'",
+                "unreachable": True,
+            }
+        except (httpx.ConnectError, ConnectionError) as e:
+            if hasattr(transport, "_circuit"):
+                transport._circuit.record_failure()
+            return {
+                "error": f"Node '{node_name}' is unreachable: {e}",
+                "unreachable": True,
+            }
         except Exception as e:
+            if hasattr(transport, "_circuit"):
+                transport._circuit.record_failure()
             return {"error": f"Failed to proxy to {node_name}: {e}"}
 
     # Fallback: execute via the node's transport (SSH, etc.)
@@ -212,7 +237,10 @@ async def proxy_to_node(node_name: str, tool_name: str, arguments: dict) -> dict
             }
         }
     except Exception as e:
-        return {"error": f"Failed to proxy to {node_name}: {e}"}
+        return {
+            "error": f"Node '{node_name}' is unreachable: {e}",
+            "unreachable": True,
+        }
 
 
 def create_http_app(config: ZpilotConfig | None = None) -> FastAPI:
@@ -307,7 +335,10 @@ def create_http_app(config: ZpilotConfig | None = None) -> FastAPI:
         result = await proxy_to_node(node_name, tool_name, arguments)
 
         if "error" in result:
-            return JSONResponse(result, status_code=502)
+            status = 503 if result.get("unreachable") else 502
+            return JSONResponse(
+                {"error": result["error"]}, status_code=status
+            )
 
         return result
 

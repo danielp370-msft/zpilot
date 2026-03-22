@@ -281,3 +281,32 @@ class TestTokenGeneration:
         from zpilot.mcp_http import generate_token
         tokens = {generate_token() for _ in range(10)}
         assert len(tokens) == 10  # all unique
+
+
+# ── Siblings endpoint tests ─────────────────────────────────────
+
+class TestSiblingsEndpoint:
+    @pytest.mark.asyncio
+    async def test_siblings_requires_auth(self, app):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get("/api/siblings")
+            assert resp.status_code == 401
+
+    @pytest.mark.asyncio
+    async def test_siblings_returns_list(self, app, auth_headers):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get("/api/siblings", headers=auth_headers)
+            assert resp.status_code == 200
+            data = resp.json()
+            assert "siblings" in data
+            assert isinstance(data["siblings"], list)
+            # Should have at least the local node
+            assert data["count"] >= 1
+            # Each sibling should have expected fields
+            for s in data["siblings"]:
+                assert "name" in s
+                assert "transport" in s

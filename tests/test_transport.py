@@ -86,3 +86,63 @@ class TestFactory:
     def test_unknown_raises(self):
         with pytest.raises(ValueError, match="Unknown transport"):
             create_transport("magic")
+
+
+class TestMCPTransportFactory:
+    def test_mcp_factory(self):
+        from zpilot.transport import MCPTransport
+        t = create_transport("mcp", host="https://example.com:8222")
+        assert isinstance(t, MCPTransport)
+        assert t.base_url == "https://example.com:8222"
+
+    def test_mcp_factory_defaults(self):
+        from zpilot.transport import MCPTransport
+        t = create_transport("mcp", host="https://example.com:8222")
+        assert t.max_retries == 3
+        assert t.retry_delay == 2.0
+
+    def test_mcp_factory_custom_retry(self):
+        from zpilot.transport import MCPTransport
+        t = create_transport(
+            "mcp", host="https://example.com:8222",
+            max_retries=5, retry_delay=1.0,
+        )
+        assert t.max_retries == 5
+        assert t.retry_delay == 1.0
+
+
+class TestMCPTransportRetry:
+    @pytest.mark.asyncio
+    async def test_exec_retries_on_failure(self):
+        """Verify exec retries and returns error after all attempts fail."""
+        from zpilot.transport import MCPTransport
+        t = MCPTransport(
+            url="http://localhost:1",  # unreachable
+            max_retries=2,
+            retry_delay=0.01,  # fast for tests
+        )
+        result = await t.exec("echo hi", timeout=1.0)
+        assert not result.ok
+        assert "after 2 attempts" in result.stderr
+
+    @pytest.mark.asyncio
+    async def test_is_alive_retries_on_failure(self):
+        """Verify is_alive retries and returns False after failures."""
+        from zpilot.transport import MCPTransport
+        t = MCPTransport(
+            url="http://localhost:1",
+            max_retries=2,
+            retry_delay=0.01,
+        )
+        alive = await t.is_alive()
+        assert alive is False
+
+    def test_url_strip_mcp_suffix(self):
+        from zpilot.transport import MCPTransport
+        t = MCPTransport(url="https://host:8222/mcp")
+        assert t.base_url == "https://host:8222"
+
+    def test_url_strip_trailing_slash(self):
+        from zpilot.transport import MCPTransport
+        t = MCPTransport(url="https://host:8222/")
+        assert t.base_url == "https://host:8222"

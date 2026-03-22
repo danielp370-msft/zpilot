@@ -212,3 +212,35 @@ def _parse_remote_sessions(output: str):
         if name:
             sessions.append(SessionModel(name=name))
     return sessions
+
+
+async def health_check_nodes(
+    registry: NodeRegistry,
+) -> dict[str, dict]:
+    """Check connectivity and latency for all nodes in the registry.
+
+    Returns a dict mapping node names to health info:
+        {
+            "node_name": {
+                "alive": bool,
+                "latency_ms": float,
+                "error": str | None,
+            }
+        }
+    """
+    results: dict[str, dict] = {}
+    for node in registry.all():
+        t0 = time.monotonic()
+        error = None
+        try:
+            alive = await node.transport.is_alive()
+        except Exception as e:
+            alive = False
+            error = str(e)
+        latency_ms = (time.monotonic() - t0) * 1000
+        results[node.name] = {
+            "alive": alive,
+            "latency_ms": round(latency_ms, 1),
+            "error": error,
+        }
+    return results

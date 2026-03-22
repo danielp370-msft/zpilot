@@ -17,7 +17,7 @@ from .detector import PaneDetector
 from .events import EventBus
 from .models import PaneState, ZpilotConfig
 from .nodes import Node, NodeRegistry, load_nodes
-from .monitor import Monitor
+from .monitor import Monitor, health_check_nodes
 
 log = logging.getLogger("zpilot.mcp")
 
@@ -381,6 +381,11 @@ def create_mcp_server(config: ZpilotConfig | None = None) -> Server:
                     "required": ["node"],
                 },
             ),
+            Tool(
+                name="list_siblings",
+                description="List known peer nodes (for mesh discovery). Returns node names, transport types, and labels.",
+                inputSchema={"type": "object", "properties": {}},
+            ),
         ]
 
     # ── Tool implementations ────────────────────────────────────
@@ -435,12 +440,21 @@ async def _dispatch(
         if monitor:
             fleet = await monitor.poll_all()
             lines = [fleet.summary(), ""]
+            # Connectivity and latency data
+            health_data = {}
+            if registry:
+                health_data = await health_check_nodes(registry)
             for nh in fleet.nodes:
                 status = f"{'●' if nh.state.value == 'online' else '○'} {nh.name}: {nh.state.value}"
                 if nh.error:
                     status += f" ({nh.error})"
                 if nh.sessions:
                     status += f" — {nh.total_sessions} sessions ({nh.busy_count} busy, {nh.idle_count} idle)"
+                hd = health_data.get(nh.name)
+                if hd:
+                    status += f" [{hd['latency_ms']:.0f}ms]"
+                    if hd.get("error"):
+                        status += f" ⚠ {hd['error']}"
                 lines.append(status)
             stuck = monitor.stuck_sessions()
             if stuck:
@@ -449,6 +463,20 @@ async def _dispatch(
                     lines.append(f"  {s.node}:{s.session} idle {s.idle_seconds:.0f}s")
             return "\n".join(lines)
         return "Monitor not available."
+
+    elif name == "list_siblings":
+        reg = registry or NodeRegistry()
+        siblings = []
+        for node in reg.all():
+            info = {
+                "name": node.name,
+                "transport": node.transport_type,
+                "host": node.host or "(local)",
+                "labels": node.labels,
+            }
+            siblings.append(info)
+        import json as _json
+        return _json.dumps({"siblings": siblings, "count": len(siblings)}, indent=2)
 
     elif name == "node_sessions":
         reg = registry or NodeRegistry()

@@ -82,3 +82,37 @@ class TestNodeState:
         assert NodeState.ONLINE.value == "online"
         assert NodeState.OFFLINE.value == "offline"
         assert NodeState.UNREACHABLE.value == "unreachable"
+
+
+class TestHealthCheckNodes:
+    @pytest.mark.asyncio
+    async def test_health_check_local_node(self):
+        from zpilot.monitor import health_check_nodes
+        from zpilot.nodes import Node, NodeRegistry
+
+        node = Node(name="local", transport_type="local")
+        registry = NodeRegistry(nodes=[node])
+
+        results = await health_check_nodes(registry)
+        assert "local" in results
+        assert results["local"]["alive"] is True
+        assert results["local"]["latency_ms"] >= 0
+        assert results["local"]["error"] is None
+
+    @pytest.mark.asyncio
+    async def test_health_check_unreachable_node(self):
+        from zpilot.monitor import health_check_nodes
+        from zpilot.nodes import Node, NodeRegistry
+
+        node = Node(
+            name="remote1",
+            host="http://localhost:1",
+            transport_type="mcp",
+            transport_opts={"token": "x", "max_retries": 1, "retry_delay": 0.01},
+        )
+        registry = NodeRegistry(nodes=[node])
+
+        results = await health_check_nodes(registry)
+        assert "remote1" in results
+        assert results["remote1"]["alive"] is False
+        assert results["remote1"]["latency_ms"] >= 0

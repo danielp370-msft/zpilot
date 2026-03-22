@@ -6,6 +6,7 @@ Each node runs its own zpilot HTTP server, exposing:
   - /api/exec     — execute a command on this node
   - /api/upload   — upload a file to this node
   - /api/download — download a file from this node
+  - /api/siblings — list known peer nodes (mesh discovery)
 
 All endpoints except /health require Bearer token authentication.
 """
@@ -28,6 +29,7 @@ from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
 from .config import load_config
 from .mcp_server import create_mcp_server
 from .models import ZpilotConfig
+from .nodes import NodeRegistry, load_nodes
 
 log = logging.getLogger("zpilot.http")
 
@@ -102,6 +104,20 @@ def create_http_app(config: ZpilotConfig | None = None) -> FastAPI:
         return await session_manager.handle_request(request)
 
     # ── REST API for transport operations ────────────────────────
+
+    @app.get("/api/siblings")
+    async def api_siblings():
+        """Return known peer nodes for mesh discovery."""
+        registry = NodeRegistry(load_nodes())
+        siblings = []
+        for node in registry.all():
+            siblings.append({
+                "name": node.name,
+                "transport": node.transport_type,
+                "host": node.host or "(local)",
+                "labels": node.labels,
+            })
+        return {"siblings": siblings, "count": len(siblings)}
 
     @app.post("/api/exec")
     async def api_exec(request: Request):

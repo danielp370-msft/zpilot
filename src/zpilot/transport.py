@@ -227,6 +227,9 @@ class MCPTransport(Transport):
     (/api/exec, /api/upload, /api/download) exposed by mcp_http.py.
     The MCP endpoint (/mcp) is used separately for tool-level communication.
 
+    Includes automatic retry with exponential backoff for resilience against
+    transient network failures. Configure via max_retries and retry_delay.
+
     Note: verify=False is used because devtunnels may use self-signed certs
     or connections may be local. Production deployments should use proper certs.
     """
@@ -236,12 +239,16 @@ class MCPTransport(Transport):
         url: str,
         token: str | None = None,
         timeout: float = 30.0,
+        max_retries: int = 3,
+        retry_delay: float = 2.0,
     ):
         # url should be the base URL like "https://host:8222"
         # Strip trailing /mcp if present
         self.base_url = url.rstrip("/").removesuffix("/mcp")
         self.token = token
         self.default_timeout = timeout
+        self.max_retries = max_retries
+        self.retry_delay = retry_delay
 
     def _headers(self) -> dict[str, str]:
         headers = {"Content-Type": "application/json"}
@@ -251,39 +258,49 @@ class MCPTransport(Transport):
 
     async def exec(self, command: str, timeout: float = 30.0, **kwargs) -> ExecResult:
         import httpx
-        try:
-            async with httpx.AsyncClient(verify=False) as client:
-                resp = await client.post(
-                    f"{self.base_url}/api/exec",
-                    json={"command": command, "timeout": timeout},
-                    headers=self._headers(),
-                    timeout=timeout + 10,  # extra buffer for network
-                )
-                if resp.status_code == 401:
-                    return ExecResult(-1, "", "Authentication failed (401)")
-                resp.raise_for_status()
-                data = resp.json()
-                return ExecResult(
-                    returncode=data.get("returncode", -1),
-                    stdout=data.get("stdout", ""),
-                    stderr=data.get("stderr", ""),
-                )
-        except httpx.TimeoutException:
-            return ExecResult(-1, "", "HTTP request timed out")
-        except Exception as e:
-            return ExecResult(-1, "", f"MCPTransport error: {e}")
+        last_error = ""
+        for attempt in range(self.max_retries):
+            try:
+                async with httpx.AsyncClient(verify=False) as client:
+                    resp = await client.post(
+                        f"{self.base_url}/api/exec",
+                        json={"command": command, "timeout": timeout},
+                        headers=self._headers(),
+                        timeout=timeout + 10,  # extra buffer for network
+                    )
+                    if resp.status_code == 401:
+                        return ExecResult(-1, "", "Authentication failed (401)")
+                    resp.raise_for_status()
+                    data = resp.json()
+                    return ExecResult(
+                        returncode=data.get("returncode", -1),
+                        stdout=data.get("stdout", ""),
+                        stderr=data.get("stderr", ""),
+                    )
+            except httpx.TimeoutException:
+                last_error = "HTTP request timed out"
+            except Exception as e:
+                last_error = f"MCPTransport error: {e}"
+            # Exponential backoff before retry
+            if attempt < self.max_retries - 1:
+                delay = self.retry_delay * (2 ** attempt)
+                await asyncio.sleep(delay)
+        return ExecResult(-1, "", f"{last_error} (after {self.max_retries} attempts)")
 
     async def is_alive(self) -> bool:
         import httpx
-        try:
-            async with httpx.AsyncClient(verify=False) as client:
-                resp = await client.get(
-                    f"{self.base_url}/health",
-                    timeout=10.0,
-                )
-                return resp.status_code == 200
-        except Exception:
-            return False
+        for attempt in range(self.max_retries):
+            try:
+                async with httpx.AsyncClient(verify=False) as client:
+                    resp = await client.get(
+                        f"{self.base_url}/health",
+                        timeout=10.0,
+                    )
+                    return resp.status_code == 200
+            except Exception:
+                if attempt < self.max_retries - 1:
+                    await asyncio.sleep(self.retry_delay * (2 ** attempt))
+        return False
 
     async def upload(self, local_path: str, remote_path: str) -> None:
         import base64
@@ -345,6 +362,8 @@ def create_transport(
             url=url,
             token=opts.get("token"),
             timeout=opts.get("timeout", 30.0),
+            max_retries=opts.get("max_retries", 3),
+            retry_delay=opts.get("retry_delay", 2.0),
         )
     else:
         raise ValueError(f"Unknown transport: {transport_type}")

@@ -63,10 +63,12 @@ async def _remote_dump_pane(node: Node, session: str, full: bool = False) -> str
     Uses force_pty=True because zellij dump-screen requires a TTY-attached
     client to communicate with the server process.
     """
+    import shlex
     full_flag = "--full" if full else ""
+    safe_session = shlex.quote(session)
     cmd = (
         f"TMP=$(mktemp) && "
-        f"zellij --session {session} action dump-screen {full_flag} $TMP && "
+        f"zellij --session {safe_session} action dump-screen {full_flag} $TMP && "
         f"cat $TMP && rm -f $TMP"
     )
     result = await node.transport.exec(cmd, timeout=15, force_pty=True)
@@ -548,7 +550,8 @@ async def _dispatch(
         layout = args.get("layout")
         node, sess = _parse_session(session_name, registry)
         if node:
-            cmd = f"zellij --session {sess} &"
+            import shlex
+            cmd = f"zellij --session {shlex.quote(sess)} &"
             await node.transport.exec(cmd, timeout=10)
             return f"Created session '{sess}' on {node.name}"
         await zellij.new_session(session_name, layout=layout)
@@ -557,7 +560,8 @@ async def _dispatch(
     elif name == "kill_session":
         node, sess = _parse_session(args["name"], registry)
         if node:
-            await _remote_zellij(node, f"delete-session {sess} --force")
+            import shlex
+            await _remote_zellij(node, f"delete-session {shlex.quote(sess)} --force")
             return f"Killed session '{sess}' on {node.name}"
         await zellij.kill_session(args["name"])
         return f"Killed session '{args['name']}'"
@@ -565,13 +569,15 @@ async def _dispatch(
     elif name == "create_pane":
         node, sess = _parse_session(args.get("session"), registry)
         if node:
-            zj_args = f"--session {sess} action new-pane" if sess else "action new-pane"
+            import shlex
+            safe_sess = shlex.quote(sess) if sess else None
+            zj_args = f"--session {safe_sess} action new-pane" if safe_sess else "action new-pane"
             if args.get("direction"):
-                zj_args += f" --direction {args['direction']}"
+                zj_args += f" --direction {shlex.quote(args['direction'])}"
             if args.get("floating"):
                 zj_args += " --floating"
             if args.get("command"):
-                zj_args += f" -- {args['command']}"
+                zj_args += f" -- {shlex.quote(args['command'])}"
             await _remote_zellij(node, zj_args)
             return f"Created pane on {node.name}:{sess or 'current'}"
         await zellij.new_pane(
@@ -600,7 +606,8 @@ async def _dispatch(
             import shlex
             text = args["text"]
             escaped = shlex.quote(text)
-            zj_args = f"--session {sess} action write-chars {escaped}" if sess else f"action write-chars {escaped}"
+            safe_sess = shlex.quote(sess) if sess else None
+            zj_args = f"--session {safe_sess} action write-chars {escaped}" if safe_sess else f"action write-chars {escaped}"
             await _remote_zellij(node, zj_args)
             detector.record_input(f"{node.name}:{sess}" if sess else node.name, "focused")
             return f"Sent {len(text)} chars to pane on {node.name}:{sess or 'current'}"
@@ -614,11 +621,11 @@ async def _dispatch(
         if node:
             import shlex
             cmd = args["command"]
-            # Write the command text then press Enter
             escaped = shlex.quote(cmd)
-            zj_args = f"--session {sess} action write-chars {escaped}" if sess else f"action write-chars {escaped}"
+            safe_sess = shlex.quote(sess) if sess else None
+            zj_args = f"--session {safe_sess} action write-chars {escaped}" if safe_sess else f"action write-chars {escaped}"
             await _remote_zellij(node, zj_args)
-            enter_args = f"--session {sess} action write 10" if sess else "action write 10"
+            enter_args = f"--session {safe_sess} action write 10" if safe_sess else "action write 10"
             await _remote_zellij(node, enter_args)
             detector.record_input(f"{node.name}:{sess}" if sess else node.name, "focused")
             return f"Executed on {node.name}:{sess or 'current'}: {cmd}"
@@ -785,12 +792,14 @@ async def _dispatch(
         keys = args["keys"]
         node, sess = _parse_session(session_raw, registry)
         if node:
+            import shlex
+            safe_sess = shlex.quote(sess) if sess else None
             results = []
             for key_name in keys:
                 key_bytes = zellij.SPECIAL_KEYS.get(key_name)
                 if key_bytes is not None:
                     for byte_val in key_bytes:
-                        zj_args = f"--session {sess} action write {byte_val}"
+                        zj_args = f"--session {safe_sess} action write {byte_val}" if safe_sess else f"action write {byte_val}"
                         await _remote_zellij(node, zj_args)
                     results.append(f"✓ {key_name}")
                 else:

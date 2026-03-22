@@ -47,6 +47,7 @@ class Session:
     is_current: bool = False
     panes: list[Pane] = field(default_factory=list)
     tabs: list[str] = field(default_factory=list)
+    managed: bool = False  # True if zpilot shell_wrapper is active (FIFO + log)
 
 
 @dataclass

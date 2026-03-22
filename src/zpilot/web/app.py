@@ -89,6 +89,19 @@ async def api_delete_session(name: str):
     return {"status": "deleted", "session": name}
 
 
+@app.post("/api/session/{name}/adopt")
+async def api_adopt_session(name: str):
+    """Adopt an unmanaged session by injecting the zpilot shell_wrapper."""
+    if zellij.is_managed(name):
+        return {"status": "already_managed", "session": name}
+    ok = await zellij.adopt_session(name)
+    return {
+        "status": "adopted" if ok else "failed",
+        "session": name,
+        "managed": zellij.is_managed(name),
+    }
+
+
 @app.post("/api/session/{name}/send")
 async def api_send_to_session(name: str, text: str = Form(...)):
     """Send text to a session's focused pane."""
@@ -341,6 +354,7 @@ async def _get_session_data() -> list[dict]:
                 "state": state.value,
                 "idle_seconds": round(idle, 1),
                 "is_current": s.is_current,
+                "managed": s.managed,
                 "last_lines": clean_lines,
                 "last_line": clean_lines[-1][:80] if clean_lines else "",
             })
@@ -350,6 +364,7 @@ async def _get_session_data() -> list[dict]:
                 "state": "unknown",
                 "idle_seconds": 0,
                 "is_current": s.is_current,
+                "managed": s.managed,
                 "last_lines": [],
                 "last_line": f"error: {e}",
             })

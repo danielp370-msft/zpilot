@@ -320,3 +320,157 @@ class TestRunWeb:
             assert call_kwargs[1]["host"] == "127.0.0.1"
             assert call_kwargs[1]["port"] == 9000
             assert "ssl_certfile" not in call_kwargs[1]
+
+    def test_run_web_with_ssl(self, tmp_path):
+        cert = tmp_path / "cert.pem"
+        key = tmp_path / "key.pem"
+        cert.write_text("CERT")
+        key.write_text("KEY")
+
+        with patch("uvicorn.run") as mock_uv, \
+             patch("zpilot.web.app.CERT_DIR", tmp_path):
+            from zpilot.web.app import run_web
+            run_web(host="0.0.0.0", port=8095, ssl=True)
+            mock_uv.assert_called_once()
+            call_kwargs = mock_uv.call_args
+            assert call_kwargs[1]["ssl_certfile"] == str(cert)
+            assert call_kwargs[1]["ssl_keyfile"] == str(key)
+
+    def test_run_web_ssl_no_cryptography(self, tmp_path, capsys):
+        # Use an empty dir so no existing certs
+        with patch("uvicorn.run") as mock_uv, \
+             patch("zpilot.web.app.CERT_DIR", tmp_path), \
+             patch("zpilot.web.app._ensure_self_signed_cert", side_effect=ImportError("no crypto")):
+            from zpilot.web.app import run_web
+            run_web(host="127.0.0.1", port=9000, ssl=True)
+            mock_uv.assert_called_once()
+            call_kwargs = mock_uv.call_args
+            # Falls back to no SSL
+            assert "ssl_certfile" not in call_kwargs[1]
+            captured = capsys.readouterr()
+            assert "cryptography" in captured.err
+
+
+# ── _strip_ansi tests ────────────────────────────────────────────────
+
+class TestStripAnsi:
+    def test_strips_csi_sequences(self):
+        text = "\x1b[32mhello\x1b[0m world"
+        result = _strip_ansi(text)
+        assert result == "hello world"
+
+    def test_strips_osc_sequences(self):
+        text = "\x1b]0;title\x07content"
+        result = _strip_ansi(text)
+        assert "title" not in result
+        assert "content" in result
+
+    def test_fullscreen_app_keeps_last_frame(self):
+        text = "frame1\x1b[2Jframe2\x1b[2Jlast frame"
+        result = _strip_ansi(text)
+        assert "last frame" in result
+        assert "frame1" not in result
+
+    def test_strips_control_chars(self):
+        text = "hello\x00\x01\x02world"
+        result = _strip_ansi(text)
+        assert "helloworld" in result
+
+    def test_collapses_blank_lines(self):
+        text = "a\n\n\n\n\nb"
+        result = _strip_ansi(text)
+        assert "\n\n\n" not in result
+
+    def test_preserves_tabs_and_newlines(self):
+        text = "col1\tcol2\nrow2\n"
+        result = _strip_ansi(text)
+        assert "\t" in result
+        assert "\n" in result
+
+
+# ── WebSocket terminal tests ─────────────────────────────────────────
+
+class TestWebSocketTerminal:
+    def test_ws_initial_content(self):
+        """WebSocket sends initial pane content on connect."""
+        with patch("zpilot.web.app.zellij") as mock_z:
+            mock_z.dump_pane = AsyncMock(return_value="$ hello\n")
+
+            client = TestClient(app)
+            with client.websocket_connect("/ws/terminal/test-ws") as ws:
+                data = ws.receive_json()
+                assert data["type"] == "output"
+                assert "hello" in data["data"]
+
+    def test_ws_send_key(self):
+        """WebSocket handles key message."""
+        with patch("zpilot.web.app.zellij") as mock_z:
+            mock_z.dump_pane = AsyncMock(return_value="$ \n")
+            mock_z.send_special_key = AsyncMock()
+
+            client = TestClient(app)
+            with client.websocket_connect("/ws/terminal/test-ws") as ws:
+                ws.receive_json()  # consume initial content
+                ws.send_text(json.dumps({"type": "key", "key": "enter"}))
+                import time; time.sleep(0.1)  # let handler process
+                mock_z.send_special_key.assert_awaited()
+
+    def test_ws_send_resize(self):
+        """WebSocket handles resize message."""
+        with patch("zpilot.web.app.zellij") as mock_z:
+            mock_z.dump_pane = AsyncMock(return_value="$ \n")
+            mock_z.resize_pane = AsyncMock()
+
+            client = TestClient(app)
+            with client.websocket_connect("/ws/terminal/test-ws") as ws:
+                ws.receive_json()
+                ws.send_text(json.dumps({"type": "resize", "cols": 120, "rows": 40}))
+                import time; time.sleep(0.1)
+                mock_z.resize_pane.assert_awaited()
+
+    def test_ws_send_raw_input(self):
+        """WebSocket handles raw data input."""
+        with patch("zpilot.web.app.zellij") as mock_z:
+            mock_z.dump_pane = AsyncMock(return_value="$ \n")
+            mock_z.write_raw_input = AsyncMock()
+
+            client = TestClient(app)
+            with client.websocket_connect("/ws/terminal/test-ws") as ws:
+                ws.receive_json()
+                ws.send_text(json.dumps({"type": "data", "data": "ls -la"}))
+                import time; time.sleep(0.1)
+                mock_z.write_raw_input.assert_awaited()
+
+    def test_ws_plain_text_fallback(self):
+        """WebSocket handles plain (non-JSON) text as raw input."""
+        with patch("zpilot.web.app.zellij") as mock_z:
+            mock_z.dump_pane = AsyncMock(return_value="$ \n")
+            mock_z.write_raw_input = AsyncMock()
+
+            client = TestClient(app)
+            with client.websocket_connect("/ws/terminal/test-ws") as ws:
+                ws.receive_json()
+                ws.send_text("not json text")
+                import time; time.sleep(0.1)
+                mock_z.write_raw_input.assert_awaited()
+
+    def test_ws_refresh_message(self):
+        """WebSocket handles refresh message."""
+        with patch("zpilot.web.app.zellij") as mock_z:
+            mock_z.dump_pane = AsyncMock(return_value="$ \n")
+
+            client = TestClient(app)
+            with client.websocket_connect("/ws/terminal/test-ws") as ws:
+                ws.receive_json()
+                ws.send_text(json.dumps({"type": "refresh"}))
+                # Refresh clears hash/content — no assertion needed, just no crash
+
+    def test_ws_empty_dump_pane(self):
+        """WebSocket handles empty initial content."""
+        with patch("zpilot.web.app.zellij") as mock_z:
+            mock_z.dump_pane = AsyncMock(return_value="")
+
+            client = TestClient(app)
+            with client.websocket_connect("/ws/terminal/test-ws") as ws:
+                # Should not crash with empty content; may or may not send initial output
+                import time; time.sleep(0.2)

@@ -47,8 +47,39 @@ async def _action(session: str | None, args: list[str], check: bool = True) -> s
 # ── Session operations ──────────────────────────────────────────────
 
 
+def is_managed(name: str) -> bool:
+    """Check if a session has zpilot shell_wrapper (FIFO + log) active."""
+    fifo = FIFO_DIR / f"{name}.fifo"
+    logs = list(LOG_DIR.glob(f"{name}--*.log"))
+    return fifo.exists() and len(logs) > 0
+
+
+async def adopt_session(name: str) -> bool:
+    """Adopt a plain Zellij session by injecting the shell_wrapper.
+
+    Uses ``zellij run --in-place`` to replace the current pane command
+    with the shell_wrapper, which sets up FIFO-based input and log-based
+    output capture.  When the wrapper exits, the original pane is restored.
+
+    Returns True if adoption was initiated, False if already managed.
+    """
+    if is_managed(name):
+        return False
+    wrapper_cmd = ["python3", str(SHELL_WRAPPER), name]
+    await _run(
+        ["--session", name, "run", "--in-place", "--"] + wrapper_cmd,
+        check=False,
+    )
+    # Wait for shell_wrapper to create the FIFO
+    for _ in range(10):
+        await asyncio.sleep(0.5)
+        if is_managed(name):
+            return True
+    return False
+
+
 async def list_sessions() -> list[Session]:
-    """List all Zellij sessions."""
+    """List all Zellij sessions with managed status."""
     raw = await _run(["list-sessions", "--no-formatting", "--short"], check=False)
     sessions = []
     for line in raw.strip().splitlines():
@@ -59,7 +90,11 @@ async def list_sessions() -> list[Session]:
         is_current = "[CURRENT]" in line or "(current)" in line.lower()
         name = re.split(r"\s+\[", line)[0].strip()
         if name:
-            sessions.append(Session(name=name, is_current=is_current))
+            sessions.append(Session(
+                name=name,
+                is_current=is_current,
+                managed=is_managed(name),
+            ))
     return sessions
 
 

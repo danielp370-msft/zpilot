@@ -700,6 +700,9 @@
             white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
         }
         .session-item .si-meta { font-size: 0.6rem; color: var(--text-dim); }
+        .session-item.unmanaged { opacity: 0.7; border-left-color: var(--orange); }
+        .si-unmanaged { font-size: 0.65rem; opacity: 0.8; }
+        .adopt-link { color: var(--accent); cursor: pointer; text-decoration: underline; }
 
         /* Event log (collapsible at bottom of sidebar) */
         .event-panel {
@@ -1082,18 +1085,31 @@
             const list = document.getElementById('session-list');
             const icons = {waiting:'🔔', active:'⏳', idle:'✅', error:'❌', unknown:'❓'};
             list.innerHTML = sessions.map(s => `
-                <div class="session-item ${dockedSessions.includes(s.name) ? 'docked' : ''}"
+                <div class="session-item ${dockedSessions.includes(s.name) ? 'docked' : ''} ${s.managed ? '' : 'unmanaged'}"
                      data-session="${s.name}"
                      onclick="dockSession('${s.name}')"
                      ondblclick="dockSession('${s.name}', true)">
                     <div class="si-top">
-                        <span class="si-name">${esc(s.name)}</span>
+                        <span class="si-name">${esc(s.name)}${s.managed ? '' : ' <span class="si-unmanaged" title="Unmanaged session — read-only, click to adopt">👁</span>'}</span>
                         <span class="si-state ${s.state}">${s.state}</span>
                     </div>
                     <div class="si-preview">${esc(s.last_line || '')}</div>
-                    <div class="si-meta">idle ${s.idle_seconds}s</div>
+                    <div class="si-meta">idle ${s.idle_seconds}s${s.managed ? '' : ' · <a class="adopt-link" onclick="event.stopPropagation();adoptSession(\''+s.name+'\')">adopt</a>'}</div>
                 </div>
             `).join('');
+        }
+
+        // ── Adopt session ────────────────────────────
+        async function adoptSession(name) {
+            try {
+                const r = await fetch(`/api/session/${encodeURIComponent(name)}/adopt`, {method:'POST'});
+                const d = await r.json();
+                if (d.status === 'adopted') {
+                    refreshSessions();
+                } else {
+                    console.warn('Adopt result:', d);
+                }
+            } catch(e) { console.error('Adopt failed:', e); }
         }
 
         // ── Dock / Undock ──────────────────────────

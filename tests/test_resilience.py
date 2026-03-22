@@ -323,6 +323,15 @@ class TestCircuitBreaker:
         cb.record_failure()
         assert cb.state == CircuitBreaker.OPEN
 
+    def test_half_open_rejects_second_probe(self):
+        """Only one probe request is allowed in HALF_OPEN state."""
+        cb = CircuitBreaker(failure_threshold=1, recovery_timeout=0.01)
+        cb.record_failure()
+        cb.last_failure_time = time.monotonic() - 1.0
+        assert cb.allow_request() is True  # first probe allowed
+        assert cb.state == CircuitBreaker.HALF_OPEN
+        assert cb.allow_request() is False  # second probe rejected
+
     def test_record_success_resets_count(self):
         cb = CircuitBreaker(failure_threshold=5)
         cb.record_failure()

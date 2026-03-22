@@ -5,11 +5,13 @@ from __future__ import annotations
 import base64
 import os
 import tempfile
+from pathlib import Path
 
 import pytest
 import httpx
 
 from zpilot.models import ZpilotConfig
+from zpilot.mcp_http import _validate_path
 from zpilot.transport import MCPTransport, create_transport, ExecResult
 
 
@@ -147,7 +149,8 @@ class TestExecEndpoint:
 class TestUploadDownloadEndpoints:
     @pytest.mark.asyncio
     async def test_upload_and_download(self, app, auth_headers):
-        with tempfile.TemporaryDirectory() as tmpdir:
+        home = str(Path.home())
+        with tempfile.TemporaryDirectory(dir=home) as tmpdir:
             target_path = os.path.join(tmpdir, "test_upload.txt")
             content = b"hello from zpilot test"
             content_b64 = base64.b64encode(content).decode()
@@ -189,15 +192,52 @@ class TestUploadDownloadEndpoints:
 
     @pytest.mark.asyncio
     async def test_download_missing_file(self, app, auth_headers):
+        home = str(Path.home())
+        missing = os.path.join(home, "nonexistent_zpilot_test_file.txt")
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
             resp = await client.get(
                 "/api/download",
-                params={"path": "/nonexistent/file.txt"},
+                params={"path": missing},
                 headers=auth_headers,
             )
             assert resp.status_code == 404
+
+
+# ── Path Validation Tests ───────────────────────────────────────
+
+class TestValidatePath:
+    def test_accepts_path_under_home(self):
+        home = str(Path.home())
+        p = os.path.join(home, "some_file.txt")
+        assert _validate_path(p) == str(Path(p).resolve())
+
+    def test_rejects_path_outside_home(self):
+        with pytest.raises(ValueError, match="outside|under"):
+            _validate_path("/etc/passwd")
+
+    def test_rejects_traversal(self):
+        home = str(Path.home())
+        with pytest.raises(ValueError, match="outside|under"):
+            _validate_path(os.path.join(home, "..", "..", "etc", "passwd"))
+
+    def test_resolves_empty_path_to_cwd(self):
+        # Empty string resolves to cwd; endpoint-level checks catch this
+        result = _validate_path("")
+        assert result  # returns resolved cwd path
+
+    @pytest.mark.asyncio
+    async def test_upload_path_traversal_returns_403(self, app, auth_headers):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.post(
+                "/api/upload",
+                json={"path": "/etc/passwd", "content": base64.b64encode(b"x").decode()},
+                headers=auth_headers,
+            )
+            assert resp.status_code == 403
 
 
 # ── MCPTransport Tests ──────────────────────────────────────────

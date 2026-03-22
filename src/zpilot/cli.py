@@ -417,7 +417,7 @@ def serve_http_cmd(
         config.http_token = token
 
     if tunnel:
-        from .devtunnel import get_or_create_tunnel, is_devtunnel_available
+        from .devtunnel import get_or_create_tunnel, host_tunnel, is_devtunnel_available
 
         if not is_devtunnel_available():
             click.echo("❌ devtunnel CLI not found. Install from: https://aka.ms/devtunnels/cli", err=True)
@@ -429,6 +429,24 @@ def serve_http_cmd(
             )
             click.echo(f"🔗 Devtunnel URL: {tunnel_url}")
             click.echo(f"   Use in nodes.toml:  url = \"{tunnel_url}\"")
+            # Start hosting the tunnel in background
+            click.echo("🚇 Starting devtunnel host...")
+            import threading
+
+            def _run_tunnel_host():
+                loop = asyncio.new_event_loop()
+                try:
+                    loop.run_until_complete(host_tunnel(tunnel_name, port=tunnel_port, allow_anonymous=tunnel_anonymous))
+                except Exception as e:
+                    logging.getLogger(__name__).warning("Devtunnel host error: %s", e)
+                finally:
+                    loop.close()
+
+            tunnel_thread = threading.Thread(
+                target=_run_tunnel_host, daemon=True
+            )
+            tunnel_thread.start()
+            click.echo("✅ Devtunnel hosting started")
         except RuntimeError as e:
             click.echo(f"⚠️  Devtunnel setup failed: {e}", err=True)
             click.echo("   Continuing without tunnel...", err=True)

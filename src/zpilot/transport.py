@@ -29,15 +29,19 @@ class CircuitBreaker:
         self.state = self.CLOSED
         self.failure_count = 0
         self.last_failure_time = 0.0
+        self._half_open_permitted = False
 
     def record_success(self):
         self.failure_count = 0
         self.state = self.CLOSED
+        self._half_open_permitted = False
 
     def record_failure(self):
         self.failure_count += 1
         self.last_failure_time = time.monotonic()
-        if self.failure_count >= self.failure_threshold:
+        if self.state == self.HALF_OPEN:
+            self.state = self.OPEN
+        elif self.failure_count >= self.failure_threshold:
             self.state = self.OPEN
 
     def allow_request(self) -> bool:
@@ -46,10 +50,14 @@ class CircuitBreaker:
         if self.state == self.OPEN:
             if time.monotonic() - self.last_failure_time >= self.recovery_timeout:
                 self.state = self.HALF_OPEN
+                self._half_open_permitted = False  # probe granted here
                 return True
             return False
-        # HALF_OPEN: allow one request
-        return True
+        # HALF_OPEN: only the single probe (granted above) is allowed
+        if self._half_open_permitted:
+            self._half_open_permitted = False
+            return True
+        return False
 
     @property
     def is_open(self) -> bool:

@@ -23,6 +23,7 @@ import ipaddress
 import logging
 import os
 import secrets
+import socket
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -43,6 +44,27 @@ log = logging.getLogger("zpilot.http")
 
 
 CERT_DIR = Path("~/.config/zpilot/certs").expanduser()
+ZPILOT_TRANSFER_DIR = Path("~/.local/share/zpilot/transfers").expanduser()
+MAX_TRANSFER_SIZE = 100 * 1024 * 1024  # 100 MB
+
+
+def _validate_path(path: str) -> str:
+    """Validate and resolve a file path for upload/download.
+
+    Ensures the path is under the user's home directory and contains
+    no directory traversal components after resolution.
+
+    Returns the resolved absolute path string.
+    Raises ValueError if the path is unsafe.
+    """
+    resolved = Path(path).resolve()
+    home = Path.home()
+    if not str(resolved).startswith(str(home)):
+        raise ValueError(f"Path must be under user home directory: {home}")
+    # Extra safety: reject if '..' still present in any component
+    if ".." in resolved.parts:
+        raise ValueError("Path traversal not allowed")
+    return str(resolved)
 
 
 def generate_token() -> str:
@@ -82,6 +104,31 @@ def generate_self_signed_cert(
     subject = issuer = x509.Name([
         x509.NameAttribute(NameOID.COMMON_NAME, "zpilot"),
     ])
+    san_names = [x509.DNSName("localhost")]
+    san_ips = [x509.IPAddress(ipaddress.IPv4Address("127.0.0.1"))]
+
+    # Add machine hostname
+    try:
+        hostname = socket.gethostname()
+        if hostname and hostname != "localhost":
+            san_names.append(x509.DNSName(hostname))
+    except Exception:
+        pass
+
+    # Add local network IPs
+    try:
+        for info in socket.getaddrinfo(socket.gethostname(), None):
+            addr = info[4][0]
+            try:
+                san_ips.append(x509.IPAddress(ipaddress.IPv4Address(addr)))
+            except ValueError:
+                try:
+                    san_ips.append(x509.IPAddress(ipaddress.IPv6Address(addr)))
+                except ValueError:
+                    pass
+    except Exception:
+        pass
+
     cert = (
         x509.CertificateBuilder()
         .subject_name(subject)
@@ -91,10 +138,7 @@ def generate_self_signed_cert(
         .not_valid_before(datetime.datetime.now(datetime.timezone.utc))
         .not_valid_after(datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=365))
         .add_extension(
-            x509.SubjectAlternativeName([
-                x509.DNSName("localhost"),
-                x509.IPAddress(ipaddress.IPv4Address("127.0.0.1")),
-            ]),
+            x509.SubjectAlternativeName(san_names + san_ips),
             critical=False,
         )
         .sign(key, hashes.SHA256())
@@ -125,7 +169,7 @@ class TokenAuthMiddleware(BaseHTTPMiddleware):
 
         # Validate token
         auth = request.headers.get("authorization", "")
-        if not auth.startswith("Bearer ") or auth[7:] != self.token:
+        if not auth.startswith("Bearer ") or not secrets.compare_digest(auth[7:], self.token):
             return JSONResponse({"error": "Unauthorized"}, status_code=401)
 
         return await call_next(request)
@@ -179,7 +223,8 @@ async def proxy_to_node(node_name: str, tool_name: str, arguments: dict) -> dict
             }
         headers = transport._headers()
         try:
-            async with httpx.AsyncClient(verify=False, timeout=30.0) as client:
+            verify = getattr(transport, '_verify', False)
+            async with httpx.AsyncClient(verify=verify, timeout=30.0) as client:
                 resp = await client.post(
                     f"{transport.base_url}/api/exec",
                     json={
@@ -395,7 +440,17 @@ def create_http_app(config: ZpilotConfig | None = None) -> FastAPI:
             return JSONResponse({"error": "path required"}, status_code=400)
 
         try:
+            path = _validate_path(path)
+        except ValueError as e:
+            return JSONResponse({"error": f"Forbidden: {e}"}, status_code=403)
+
+        try:
             content = base64.b64decode(content_b64)
+            if len(content) > MAX_TRANSFER_SIZE:
+                return JSONResponse(
+                    {"error": f"File too large ({len(content)} bytes). Max: {MAX_TRANSFER_SIZE} bytes"},
+                    status_code=413,
+                )
             os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
             with open(path, "wb") as f:
                 f.write(content)
@@ -408,10 +463,24 @@ def create_http_app(config: ZpilotConfig | None = None) -> FastAPI:
         """Download a file from this node."""
         path = request.query_params.get("path", "")
 
-        if not path or not os.path.exists(path):
+        if not path:
             return JSONResponse({"error": "file not found"}, status_code=404)
 
         try:
+            path = _validate_path(path)
+        except ValueError as e:
+            return JSONResponse({"error": f"Forbidden: {e}"}, status_code=403)
+
+        if not os.path.exists(path):
+            return JSONResponse({"error": "file not found"}, status_code=404)
+
+        try:
+            file_size = os.path.getsize(path)
+            if file_size > MAX_TRANSFER_SIZE:
+                return JSONResponse(
+                    {"error": f"File too large ({file_size} bytes). Max: {MAX_TRANSFER_SIZE} bytes"},
+                    status_code=413,
+                )
             with open(path, "rb") as f:
                 content = f.read()
             return {

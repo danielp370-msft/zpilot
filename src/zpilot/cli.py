@@ -391,8 +391,22 @@ def nodes() -> None:
 @click.option("--host", default=None, help="Bind address (default: from config)")
 @click.option("--port", type=int, default=None, help="Port number (default: from config)")
 @click.option("--token", default=None, help="Auth token (overrides config)")
-def serve_http_cmd(host: str | None, port: int | None, token: str | None) -> None:
-    """Start the MCP server (HTTP transport for distributed zpilot)."""
+@click.option("--tunnel", is_flag=True, default=False, help="Also start a devtunnel to expose the server publicly")
+@click.option("--tunnel-name", default="zpilot", help="Devtunnel name (default: zpilot)")
+@click.option("--tunnel-anonymous", is_flag=True, default=False, help="Allow anonymous tunnel access (for testing)")
+def serve_http_cmd(
+    host: str | None,
+    port: int | None,
+    token: str | None,
+    tunnel: bool,
+    tunnel_name: str,
+    tunnel_anonymous: bool,
+) -> None:
+    """Start the MCP server (HTTP transport for distributed zpilot).
+
+    Use --tunnel to also create a devtunnel, giving a public HTTPS URL
+    with TLS handled by devtunnel infrastructure (no self-signed certs needed).
+    """
     logging.basicConfig(level=logging.INFO, stream=sys.stderr)
     config = load_config()
     if host is not None:
@@ -401,6 +415,23 @@ def serve_http_cmd(host: str | None, port: int | None, token: str | None) -> Non
         config.http_port = port
     if token is not None:
         config.http_token = token
+
+    if tunnel:
+        from .devtunnel import get_or_create_tunnel, is_devtunnel_available
+
+        if not is_devtunnel_available():
+            click.echo("❌ devtunnel CLI not found. Install from: https://aka.ms/devtunnels/cli", err=True)
+            sys.exit(1)
+        try:
+            tunnel_port = port or config.http_port
+            tunnel_url = get_or_create_tunnel(
+                name=tunnel_name, port=tunnel_port, anonymous=tunnel_anonymous
+            )
+            click.echo(f"🔗 Devtunnel URL: {tunnel_url}")
+            click.echo(f"   Use in nodes.toml:  url = \"{tunnel_url}\"")
+        except RuntimeError as e:
+            click.echo(f"⚠️  Devtunnel setup failed: {e}", err=True)
+            click.echo("   Continuing without tunnel...", err=True)
 
     from .mcp_http import serve_http
     asyncio.run(serve_http(config))
@@ -530,6 +561,130 @@ def ping(node_name: str) -> None:
             click.echo(f"✗ {node.name}: {e}")
 
     asyncio.run(_ping())
+
+
+# ── Devtunnel commands ──────────────────────────────────────────
+
+
+@main.command("tunnel-up")
+@click.option("--port", type=int, default=8222, help="Local port to expose (default: 8222)")
+@click.option("--name", default="zpilot", help="Tunnel name (default: zpilot)")
+@click.option("--anonymous", is_flag=True, default=False, help="Allow anonymous access")
+@click.option("--host-tunnel", "do_host", is_flag=True, default=False, help="Also start hosting (background process)")
+def tunnel_up(port: int, name: str, anonymous: bool, do_host: bool) -> None:
+    """Start a devtunnel to expose zpilot HTTP server.
+
+    Creates (or reuses) a devtunnel with the given name and port,
+    prints the public URL, and optionally starts hosting.
+    Requires the devtunnel CLI: https://aka.ms/devtunnels/cli
+    """
+    from .devtunnel import get_or_create_tunnel, host_tunnel, is_devtunnel_available
+
+    if not is_devtunnel_available():
+        click.echo("❌ devtunnel CLI not found.", err=True)
+        click.echo("   Install from: https://aka.ms/devtunnels/cli", err=True)
+        sys.exit(1)
+
+    try:
+        url = get_or_create_tunnel(name=name, port=port, anonymous=anonymous)
+        click.echo(f"🔗 Tunnel URL: {url}")
+        click.echo(f"   Tunnel:     {name}")
+        click.echo(f"   Port:       {port}")
+        if anonymous:
+            click.echo(f"   Access:     anonymous")
+        click.echo()
+        click.echo(f"   Add to nodes.toml:")
+        click.echo(f'   [nodes.remote]')
+        click.echo(f'   transport = "mcp"')
+        click.echo(f'   url = "{url}"')
+        click.echo(f'   token = "<your-shared-secret>"')
+    except RuntimeError as e:
+        click.echo(f"❌ {e}", err=True)
+        sys.exit(1)
+
+    if do_host:
+        click.echo()
+        click.echo("🚀 Starting tunnel host (Ctrl+C to stop)...")
+
+        async def _host() -> None:
+            proc = await host_tunnel(name, port=port, allow_anonymous=anonymous)
+            try:
+                await proc.wait()
+            except asyncio.CancelledError:
+                proc.terminate()
+                await proc.wait()
+
+        try:
+            asyncio.run(_host())
+        except KeyboardInterrupt:
+            click.echo("\n⏹  Tunnel host stopped.")
+
+
+@main.command("tunnel-down")
+@click.option("--name", default="zpilot", help="Tunnel name (default: zpilot)")
+def tunnel_down(name: str) -> None:
+    """Stop devtunnel hosting.
+
+    Note: This deletes the tunnel's port forwarding session.
+    The tunnel itself persists and can be reused with tunnel-up.
+    """
+    from .devtunnel import is_devtunnel_available
+
+    if not is_devtunnel_available():
+        click.echo("❌ devtunnel CLI not found.", err=True)
+        sys.exit(1)
+
+    import subprocess
+    import shutil
+
+    binary = shutil.which("devtunnel")
+    result = subprocess.run(
+        [binary, "unhost", name],
+        capture_output=True, text=True,
+    )
+    if result.returncode == 0:
+        click.echo(f"⏹  Tunnel '{name}' hosting stopped.")
+    else:
+        # devtunnel unhost may not exist in all versions; try kill approach
+        click.echo(f"ℹ️  {result.stderr.strip() or 'No active hosting session found.'}")
+
+
+@main.command("tunnel-status")
+def tunnel_status() -> None:
+    """Show devtunnel status and URL.
+
+    Lists configured tunnels and their public URLs.
+    Requires the devtunnel CLI: https://aka.ms/devtunnels/cli
+    """
+    from .devtunnel import get_tunnel_detail, is_devtunnel_available, list_tunnels
+
+    if not is_devtunnel_available():
+        click.echo("❌ devtunnel CLI not found.", err=True)
+        click.echo("   Install from: https://aka.ms/devtunnels/cli", err=True)
+        sys.exit(1)
+
+    tunnels = list_tunnels()
+    if not tunnels:
+        click.echo("No tunnels found. Create one with: zpilot tunnel-up")
+        return
+
+    for t in tunnels:
+        try:
+            detail = get_tunnel_detail(t.tunnel_id)
+            click.echo(f"🔗 {detail.tunnel_id}")
+            if detail.access_control:
+                click.echo(f"   Access:      {detail.access_control}")
+            click.echo(f"   Connections: {detail.host_connections} host, {detail.client_connections} client")
+            click.echo(f"   Expiration:  {detail.expiration}")
+            if detail.port_entries:
+                for pe in detail.port_entries:
+                    url = pe.get("url", "")
+                    click.echo(f"   Port {pe['port']}: {url}")
+            else:
+                click.echo("   No ports configured")
+            click.echo()
+        except RuntimeError as e:
+            click.echo(f"  ⚠️  {t.tunnel_id}: {e}")
 
 
 if __name__ == "__main__":

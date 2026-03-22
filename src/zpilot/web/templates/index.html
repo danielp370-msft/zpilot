@@ -6,1180 +6,1043 @@
     <title>zpilot — Mission Control</title>
     <link rel="stylesheet" href="/static/vendor/xterm.min.css">
     <style>
+        /* ═══════════════════════════════════════════
+           THEMES — CSS Custom Properties
+           ═══════════════════════════════════════════ */
         :root, [data-theme="dark"] {
-            --bg: #0d1117;
-            --panel-bg: #161b22;
-            --border: #30363d;
-            --text: #e6edf3;
-            --text-dim: #8b949e;
-            --accent: #58a6ff;
-            --green: #3fb950;
-            --yellow: #d29922;
-            --red: #f85149;
-            --orange: #db6d28;
-            --term-bg: #010409;
-            --glow: none;
-            --scanline: none;
+            --bg: #0d1117; --panel-bg: #161b22; --border: #30363d;
+            --text: #e6edf3; --text-dim: #8b949e; --accent: #58a6ff;
+            --green: #3fb950; --yellow: #d29922; --red: #f85149; --orange: #db6d28;
+            --term-bg: #010409; --glow: none; --scanline: none;
+            --dock-bg: #161b22; --topbar-bg: #161b22;
+            --pill-bg: #21262d; --pill-active-bg: #30363d;
+            --card-bg: #161b22; --card-hover: #1c2129;
+            --overlay-bg: rgba(1,4,9,0.85);
         }
         [data-theme="cyberpunk"] {
-            --bg: #0a0a12;
-            --panel-bg: #12111f;
-            --border: #2a1f4e;
-            --text: #e0d4ff;
-            --text-dim: #8878b8;
-            --accent: #ff2a6d;
-            --green: #05ffa1;
-            --yellow: #ffd319;
-            --red: #ff2a6d;
-            --orange: #ff6e27;
+            --bg: #0a0a12; --panel-bg: #12111f; --border: #2a1f4e;
+            --text: #e0d4ff; --text-dim: #8878b8; --accent: #ff2a6d;
+            --green: #05ffa1; --yellow: #ffd319; --red: #ff2a6d; --orange: #ff6e27;
             --term-bg: #08060f;
             --glow: 0 0 10px rgba(255,42,109,0.3), 0 0 40px rgba(255,42,109,0.1);
-            --scanline: repeating-linear-gradient(
-                0deg, transparent, transparent 2px, rgba(0,0,0,0.15) 2px, rgba(0,0,0,0.15) 4px
-            );
+            --scanline: repeating-linear-gradient(0deg, transparent, transparent 2px, rgba(0,0,0,0.15) 2px, rgba(0,0,0,0.15) 4px);
+            --dock-bg: #0e0c1a; --topbar-bg: #0e0c1a;
+            --pill-bg: #1a1730; --pill-active-bg: #2a1f4e;
+            --card-bg: #12111f; --card-hover: #1a1730;
+            --overlay-bg: rgba(8,6,15,0.9);
         }
-        [data-theme="cyberpunk"] .topbar { border-bottom: 1px solid var(--accent); box-shadow: 0 2px 20px rgba(255,42,109,0.4); }
-        [data-theme="cyberpunk"] .topbar h1 { text-shadow: 0 0 10px var(--accent), 0 0 40px var(--accent); letter-spacing: 0.1em; }
-        [data-theme="cyberpunk"] .sidebar { border-right: 1px solid rgba(255,42,109,0.4); box-shadow: 2px 0 15px rgba(255,42,109,0.1); }
-        [data-theme="cyberpunk"] .term-header { border-bottom-color: #2a1f4e; }
-        [data-theme="cyberpunk"] .term-panel { border: 1px solid rgba(255,42,109,0.2); }
-        @keyframes cyber-glow {
-            0%, 100% { box-shadow: 0 0 10px rgba(255,42,109,0.2); }
-            50% { box-shadow: 0 0 20px rgba(255,42,109,0.4), 0 0 40px rgba(255,42,109,0.1); }
-        }
-        [data-theme="cyberpunk"] .term-panel.focused { border-color: rgba(255,42,109,0.5); animation: cyber-glow 3s ease-in-out infinite; }
-        [data-theme="cyberpunk"] .term-panel.focused .term-header { background: linear-gradient(90deg, rgba(255,42,109,0.2), transparent); }
-        [data-theme="cyberpunk"] .si-state.active { background: var(--green); text-shadow: 0 0 6px var(--green); }
-        [data-theme="cyberpunk"] .si-state.waiting { background: var(--accent); text-shadow: 0 0 6px var(--accent); }
-        [data-theme="cyberpunk"] .status-dot.online { background: var(--green); box-shadow: 0 0 8px var(--green), 0 0 16px var(--green); }
-        [data-theme="cyberpunk"] .tab.active { border-color: var(--accent); box-shadow: 0 0 10px rgba(255,42,109,0.4); }
-        [data-theme="cyberpunk"] .layout-btns button:hover,
-        [data-theme="cyberpunk"] .layout-btns button.active { background: var(--accent); box-shadow: 0 0 10px var(--accent); }
-        [data-theme="cyberpunk"] .session-item:hover { background: rgba(255,42,109,0.08); }
-        [data-theme="cyberpunk"] .session-item.docked { background: rgba(255,42,109,0.12); border-left-color: var(--accent); }
-        [data-theme="cyberpunk"] .event-panel-header { text-shadow: 0 0 8px rgba(5,255,161,0.4); }
-        [data-theme="cyberpunk"] .ev-session { color: var(--accent); }
-        [data-theme="cyberpunk"] .sidebar-header button { border-color: var(--accent); color: var(--accent); }
-        [data-theme="cyberpunk"] .sidebar-header button:hover { background: var(--accent); color: #000; box-shadow: 0 0 10px var(--accent); }
-        [data-theme="cyberpunk"] .term-body::after {
-            content: ''; position: absolute; inset: 0; pointer-events: none;
-            background: var(--scanline); z-index: 1; opacity: 0.3;
-        }
-        /* Cyberpunk scrollbar */
-        [data-theme="cyberpunk"] ::-webkit-scrollbar { width: 6px; }
-        [data-theme="cyberpunk"] ::-webkit-scrollbar-track { background: var(--bg); }
-        [data-theme="cyberpunk"] ::-webkit-scrollbar-thumb { background: rgba(255,42,109,0.3); border-radius: 3px; }
-        [data-theme="cyberpunk"] ::-webkit-scrollbar-thumb:hover { background: var(--accent); }
-
         [data-theme="monokai"] {
-            --bg: #272822;
-            --panel-bg: #2e2f2a;
-            --border: #49483e;
-            --text: #f8f8f2;
-            --text-dim: #75715e;
-            --accent: #a6e22e;
-            --green: #a6e22e;
-            --yellow: #e6db74;
-            --red: #f92672;
-            --orange: #fd971f;
-            --term-bg: #1e1f1c;
-            --glow: none;
-            --scanline: none;
+            --bg: #272822; --panel-bg: #2e2f2a; --border: #49483e;
+            --text: #f8f8f2; --text-dim: #75715e; --accent: #a6e22e;
+            --green: #a6e22e; --yellow: #e6db74; --red: #f92672; --orange: #fd971f;
+            --term-bg: #1e1f1c; --glow: none; --scanline: none;
+            --dock-bg: #2e2f2a; --topbar-bg: #2e2f2a;
+            --pill-bg: #3e3d32; --pill-active-bg: #49483e;
+            --card-bg: #2e2f2a; --card-hover: #3e3d32;
+            --overlay-bg: rgba(30,31,28,0.9);
         }
-
         [data-theme="light"] {
-            --bg: #f6f8fa;
-            --panel-bg: #ffffff;
-            --border: #d0d7de;
-            --text: #1f2328;
-            --text-dim: #656d76;
-            --accent: #0969da;
-            --green: #1a7f37;
-            --yellow: #9a6700;
-            --red: #cf222e;
-            --orange: #bc4c00;
-            --term-bg: #ffffff;
-            --glow: none;
-            --scanline: none;
+            --bg: #f6f8fa; --panel-bg: #ffffff; --border: #d0d7de;
+            --text: #1f2328; --text-dim: #656d76; --accent: #0969da;
+            --green: #1a7f37; --yellow: #9a6700; --red: #cf222e; --orange: #bc4c00;
+            --term-bg: #ffffff; --glow: none; --scanline: none;
+            --dock-bg: #ffffff; --topbar-bg: #ffffff;
+            --pill-bg: #eaeef2; --pill-active-bg: #d0d7de;
+            --card-bg: #ffffff; --card-hover: #f6f8fa;
+            --overlay-bg: rgba(246,248,250,0.92);
         }
-
-        /* ── Neon Theme ───────────────────────────── */
         [data-theme="neon"] {
-            --bg: #020810;
-            --panel-bg: #06101a;
-            --border: #0c2840;
-            --text: #e0f0ff;
-            --text-dim: #4a8ab5;
-            --accent: #00d4ff;
-            --green: #00ff88;
-            --yellow: #ffee00;
-            --red: #ff3355;
-            --orange: #ff8800;
-            --term-bg: #010508;
-            --glow: none;
-            --scanline: none;
+            --bg: #020810; --panel-bg: #06101a; --border: #0c2840;
+            --text: #e0f0ff; --text-dim: #4a8ab5; --accent: #00d4ff;
+            --green: #00ff88; --yellow: #ffee00; --red: #ff3355; --orange: #ff8800;
+            --term-bg: #010508; --glow: none; --scanline: none;
+            --dock-bg: #040c16; --topbar-bg: #040c16;
+            --pill-bg: #0a1828; --pill-active-bg: #0c2840;
+            --card-bg: #06101a; --card-hover: #0a1828;
+            --overlay-bg: rgba(1,5,8,0.9);
         }
-        [data-theme="neon"] .topbar {
-            background: linear-gradient(90deg, #020810, #06101a);
-            border-bottom: 1px solid #00d4ff;
-            box-shadow: 0 1px 12px rgba(0,212,255,0.2);
-        }
-        [data-theme="neon"] .topbar h1 {
-            color: #fff;
-            text-shadow: 0 0 8px rgba(0,212,255,0.6), 0 0 20px rgba(0,212,255,0.3);
-            letter-spacing: 0.1em;
-        }
-        [data-theme="neon"] .topbar h1 span { color: #4a8ab5; }
-        [data-theme="neon"] .sidebar {
-            background: #06101a;
-            border-right: 1px solid #0c2840;
-        }
-        [data-theme="neon"] .sidebar-header {
-            background: transparent;
-            color: #00d4ff;
-            border-bottom: 1px solid #0c2840;
-            text-shadow: 0 0 6px rgba(0,212,255,0.4);
-        }
-        [data-theme="neon"] .sidebar-header button {
-            border-color: #00d4ff;
-            color: #00d4ff;
-        }
-        [data-theme="neon"] .sidebar-header button:hover {
-            background: #00d4ff;
-            color: #020810;
-            box-shadow: 0 0 8px rgba(0,212,255,0.5);
-        }
-        [data-theme="neon"] .session-item {
-            border-bottom: 1px solid #0c2840;
-            border-left: 2px solid transparent;
-            margin: 2px 4px;
-            border-radius: 4px;
-            padding: 8px 10px;
-        }
-        [data-theme="neon"] .session-item:hover {
-            background: rgba(0,212,255,0.06);
-            border-left-color: rgba(0,212,255,0.3);
-        }
-        [data-theme="neon"] .session-item.docked {
-            background: rgba(0,212,255,0.08);
-            border-left-color: #00d4ff;
-            box-shadow: inset 2px 0 8px rgba(0,212,255,0.1);
-        }
-        [data-theme="neon"] .si-name { color: #fff; }
-        [data-theme="neon"] .si-state.waiting { background: #00d4ff; color: #020810; }
-        [data-theme="neon"] .si-state.active { background: #00ff88; color: #020810; box-shadow: 0 0 6px rgba(0,255,136,0.4); }
-        [data-theme="neon"] .si-state.idle { background: #4a8ab5; color: #020810; }
-        [data-theme="neon"] .si-state.error { background: #ff3355; color: #fff; }
-        /* Layout buttons */
-        [data-theme="neon"] .layout-btns button {
-            background: transparent;
-            border: 1px solid #0c2840;
-            color: #4a8ab5;
-        }
-        [data-theme="neon"] .layout-btns button:hover,
-        [data-theme="neon"] .layout-btns button.active {
-            background: #00d4ff;
-            border-color: #00d4ff;
-            color: #020810;
-            box-shadow: 0 0 8px rgba(0,212,255,0.4);
-        }
-        /* Tabs */
-        [data-theme="neon"] .tab-bar {
-            background: #020810;
-            border-bottom: 1px solid #0c2840;
-        }
-        [data-theme="neon"] .tab { color: #4a8ab5; border-right-color: #0c2840; }
-        [data-theme="neon"] .tab:hover { background: rgba(0,212,255,0.06); color: #e0f0ff; }
-        [data-theme="neon"] .tab.active {
-            color: #fff;
-            background: rgba(0,212,255,0.15);
-            border-bottom: 2px solid #00d4ff;
-            box-shadow: 0 1px 10px rgba(0,212,255,0.2);
-            text-shadow: 0 0 6px rgba(0,212,255,0.5);
-        }
-        [data-theme="neon"] .tab .tab-dot.waiting { background: #00d4ff; box-shadow: 0 0 4px #00d4ff; }
-        [data-theme="neon"] .tab .tab-dot.active { background: #00ff88; box-shadow: 0 0 4px #00ff88; }
-        [data-theme="neon"] .tab .tab-dot.idle { background: #4a8ab5; }
-        /* Terminal panels */
-        [data-theme="neon"] .term-panel {
-            border: 1px solid #0c2840;
-        }
-        [data-theme="neon"] .term-panel.focused {
-            border-color: #00d4ff;
-            box-shadow: 0 0 12px rgba(0,212,255,0.15), inset 0 0 12px rgba(0,212,255,0.03);
-        }
-        [data-theme="neon"] .term-header {
-            background: rgba(0,212,255,0.06);
-            border-bottom: 1px solid #0c2840;
-        }
-        [data-theme="neon"] .term-header .th-name { color: #00d4ff; }
-        [data-theme="neon"] .term-panel.focused .term-header {
-            background: rgba(0,212,255,0.12);
-            border-bottom-color: rgba(0,212,255,0.3);
-        }
-        /* Events */
-        [data-theme="neon"] .event-panel { border-top-color: #0c2840; }
-        [data-theme="neon"] .event-panel-header { color: #00d4ff; }
-        [data-theme="neon"] .ev-session { color: #00d4ff; }
-        [data-theme="neon"] .ev-row { border-bottom-color: #0c2840; }
-        /* Status dot */
-        [data-theme="neon"] .status-dot.online {
-            background: #00ff88;
-            box-shadow: 0 0 6px #00ff88, 0 0 12px rgba(0,255,136,0.3);
-        }
-        /* Settings */
-        [data-theme="neon"] .settings-panel {
-            background: #06101a;
-            border: 1px solid #00d4ff;
-            box-shadow: 0 4px 20px rgba(0,212,255,0.15);
-        }
-        [data-theme="neon"] .settings-panel h3 { color: #00d4ff; }
-        /* Scrollbar */
-        [data-theme="neon"] ::-webkit-scrollbar { width: 5px; }
-        [data-theme="neon"] ::-webkit-scrollbar-track { background: #020810; }
-        [data-theme="neon"] ::-webkit-scrollbar-thumb { background: #0c2840; border-radius: 3px; }
-        [data-theme="neon"] ::-webkit-scrollbar-thumb:hover { background: #00d4ff; }
-
-        /* ── Neon Tron Effects ──────────────────── */
-
-        /* Status badges pulse when active/waiting */
-        @keyframes neon-pulse-cyan {
-            0%, 100% { box-shadow: 0 0 4px rgba(0,212,255,0.4); }
-            50% { box-shadow: 0 0 10px rgba(0,212,255,0.7), 0 0 20px rgba(0,212,255,0.3); }
-        }
-        @keyframes neon-pulse-green {
-            0%, 100% { box-shadow: 0 0 4px rgba(0,255,136,0.4); }
-            50% { box-shadow: 0 0 10px rgba(0,255,136,0.7), 0 0 20px rgba(0,255,136,0.3); }
-        }
-        [data-theme="neon"] .si-state.waiting {
-            animation: neon-pulse-cyan 2.5s ease-in-out infinite;
-        }
-        [data-theme="neon"] .si-state.active {
-            animation: neon-pulse-green 2s ease-in-out infinite;
-        }
-        [data-theme="neon"] .tab .tab-dot.waiting {
-            animation: neon-pulse-cyan 2.5s ease-in-out infinite;
-        }
-        [data-theme="neon"] .tab .tab-dot.active {
-            animation: neon-pulse-green 2s ease-in-out infinite;
-        }
-
-        /* Focused terminal border breathes */
-        @keyframes neon-border-breathe {
-            0%, 100% { border-color: #00d4ff; box-shadow: 0 0 8px rgba(0,212,255,0.15), inset 0 0 8px rgba(0,212,255,0.03); }
-            50% { border-color: #33e0ff; box-shadow: 0 0 16px rgba(0,212,255,0.3), inset 0 0 16px rgba(0,212,255,0.05); }
-        }
-        [data-theme="neon"] .term-panel.focused {
-            animation: neon-border-breathe 3s ease-in-out infinite;
-        }
-
-        /* Online status dot glow */
-        [data-theme="neon"] .status-dot.online {
-            animation: neon-pulse-green 2s ease-in-out infinite;
-        }
-
-        /* Docked session card left border glow */
-        @keyframes neon-edge-glow {
-            0%, 100% { border-left-color: #00d4ff; box-shadow: inset 2px 0 6px rgba(0,212,255,0.1); }
-            50% { border-left-color: #33e0ff; box-shadow: inset 2px 0 12px rgba(0,212,255,0.2); }
-        }
-        [data-theme="neon"] .session-item.docked {
-            animation: neon-edge-glow 3s ease-in-out infinite;
-        }
-
-        /* ── LCARS Theme ──────────────────────────── */
         [data-theme="lcars"] {
-            --bg: #000000;
-            --panel-bg: #0a0a14;
-            --border: #1a1a2e;
-            --text: #ff9900;
-            --text-dim: #cc7700;
-            --accent: #ff9900;
-            --green: #00cc66;
-            --yellow: #ffcc00;
-            --red: #cc3300;
-            --orange: #ff6633;
-            --term-bg: #000000;
-            --glow: none;
-            --scanline: none;
-            --lcars-purple: #9977dd;
-            --lcars-blue: #5599dd;
-            --lcars-tan: #cc9966;
-            --lcars-pink: #cc6699;
-            --lcars-red: #cc3300;
-        }
-        /* Topbar: LCARS elbow bar */
-        [data-theme="lcars"] .topbar {
-            background: #000;
-            border-bottom: 3px solid var(--lcars-tan);
-            padding: 0;
-            height: 48px;
-            position: relative;
-            overflow: hidden;
-        }
-        [data-theme="lcars"] .topbar::before {
-            content: '';
-            position: absolute;
-            left: 0; top: 0; bottom: 0;
-            width: 12px;
-            background: var(--lcars-tan);
-            border-radius: 0 0 12px 0;
-        }
-        [data-theme="lcars"] .topbar::after {
-            content: '';
-            position: absolute;
-            right: 0; top: 0; bottom: 0;
-            width: 12px;
-            background: var(--lcars-purple);
-            border-radius: 0 0 0 12px;
-        }
-        [data-theme="lcars"] .topbar-left {
-            position: relative; z-index: 1;
-            padding-left: 24px;
-        }
-        [data-theme="lcars"] .topbar h1 {
-            color: #ff9900;
-            font-size: 1.1rem;
-            letter-spacing: 0.2em;
-            text-transform: uppercase;
-            font-weight: 400;
-        }
-        [data-theme="lcars"] .topbar h1 span { color: var(--lcars-blue); }
-        [data-theme="lcars"] .topbar-right {
-            position: relative; z-index: 1;
-            padding-right: 24px;
-            color: var(--lcars-tan);
-        }
-        /* Layout buttons: pill shapes */
-        [data-theme="lcars"] .layout-btns { position: relative; z-index: 1; }
-        [data-theme="lcars"] .layout-btns button {
-            background: #1a1a2e;
-            border: 1px solid var(--lcars-purple);
-            color: var(--lcars-purple);
-            border-radius: 12px;
-            padding: 3px 12px;
-            font-weight: 700;
-            margin: 0 1px;
-        }
-        [data-theme="lcars"] .layout-btns button:hover,
-        [data-theme="lcars"] .layout-btns button.active {
-            background: #ff9900;
-            border-color: #ff9900;
-            color: #000;
-        }
-        [data-theme="lcars"] .layout-btns button:first-child { border-radius: 12px; }
-        [data-theme="lcars"] .layout-btns button:last-child { border-radius: 12px; }
-
-        /* Sidebar: LCARS panel with colored edge */
-        [data-theme="lcars"] .sidebar {
-            background: #000;
-            border-right: none;
-            position: relative;
-        }
-        [data-theme="lcars"] .sidebar::before {
-            content: '';
-            position: absolute;
-            right: 0; top: 0; bottom: 0;
-            width: 4px;
-            background: linear-gradient(180deg, var(--lcars-tan), var(--lcars-purple), var(--lcars-blue), var(--lcars-pink));
-        }
-        [data-theme="lcars"] .sidebar-header {
-            background: var(--lcars-blue);
-            color: #000;
-            font-weight: 700;
-            text-transform: uppercase;
-            letter-spacing: 0.1em;
-            border-bottom: 3px solid #000;
-            border-radius: 0 0 0 16px;
-            padding: 8px 14px;
-        }
-        [data-theme="lcars"] .sidebar-header button {
-            background: #000;
-            border: none;
-            color: var(--lcars-blue);
-            font-weight: 700;
-            border-radius: 8px;
-            padding: 2px 10px;
-        }
-        [data-theme="lcars"] .sidebar-header button:hover {
-            background: var(--lcars-blue);
-            color: #000;
-        }
-        /* Session items: bubble cards */
-        [data-theme="lcars"] .session-item {
-            border-bottom: 2px solid #0a0a14;
-            border-left: none;
-            margin: 4px 8px 0 4px;
-            padding: 8px 12px;
-            border-radius: 4px 14px 14px 4px;
-            background: #0a0a14;
-            position: relative;
-        }
-        [data-theme="lcars"] .session-item::before {
-            content: '';
-            position: absolute;
-            left: 0; top: 0; bottom: 0;
-            width: 4px;
-            border-radius: 4px 0 0 4px;
-            background: var(--lcars-purple);
-        }
-        [data-theme="lcars"] .session-item:hover {
-            background: #12122a;
-        }
-        [data-theme="lcars"] .session-item.docked {
-            background: #12122a;
-        }
-        [data-theme="lcars"] .session-item.docked::before {
-            background: #ff9900;
-        }
-        [data-theme="lcars"] .si-name {
-            color: #ff9900;
-            text-transform: uppercase;
-            letter-spacing: 0.05em;
-        }
-        [data-theme="lcars"] .si-state {
-            border-radius: 10px;
-            font-size: 0.6rem;
-            padding: 1px 8px;
-        }
-        [data-theme="lcars"] .si-state.waiting { background: var(--lcars-pink); color: #000; }
-        [data-theme="lcars"] .si-state.active { background: var(--lcars-blue); color: #000; }
-        [data-theme="lcars"] .si-state.idle { background: var(--green); color: #000; }
-        [data-theme="lcars"] .si-state.error { background: var(--lcars-red); color: #fff; }
-        [data-theme="lcars"] .si-preview { color: var(--lcars-tan); }
-        [data-theme="lcars"] .si-meta { color: var(--lcars-purple); }
-
-        /* Event panel */
-        [data-theme="lcars"] .event-panel {
-            border-top: 3px solid var(--lcars-tan);
-        }
-        [data-theme="lcars"] .event-panel-header {
-            color: var(--lcars-tan);
-            text-transform: uppercase;
-            letter-spacing: 0.1em;
-            font-weight: 700;
-        }
-        [data-theme="lcars"] .ev-session { color: var(--lcars-blue); }
-        [data-theme="lcars"] .ev-row { border-bottom-color: #0a0a14; }
-
-        /* Tab bar */
-        [data-theme="lcars"] .tab-bar {
-            background: #000;
-            border-bottom: 3px solid var(--lcars-purple);
-        }
-        [data-theme="lcars"] .tab {
-            color: var(--lcars-purple);
-            border-right: 2px solid #000;
-            padding: 4px 16px;
-            text-transform: uppercase;
-            letter-spacing: 0.05em;
-            font-weight: 600;
-        }
-        [data-theme="lcars"] .tab:hover { background: rgba(153,119,221,0.15); }
-        [data-theme="lcars"] .tab.active {
-            background: var(--lcars-purple);
-            color: #000;
-            border-bottom: none;
-        }
-        [data-theme="lcars"] .tab .tab-dot.waiting { background: var(--lcars-pink); }
-        [data-theme="lcars"] .tab .tab-dot.active { background: var(--lcars-blue); }
-        [data-theme="lcars"] .tab .tab-dot.idle { background: var(--green); }
-
-        /* Terminal panels */
-        [data-theme="lcars"] .term-panel {
-            border: 2px solid #1a1a2e;
-            border-radius: 0 16px 16px 0;
-            overflow: hidden;
-        }
-        [data-theme="lcars"] .term-panel.focused {
-            border-color: var(--lcars-purple);
-        }
-        [data-theme="lcars"] .term-header {
-            background: linear-gradient(90deg, var(--lcars-purple), var(--lcars-blue));
-            color: #000;
-            border-bottom: 2px solid #000;
-            font-weight: 700;
-            text-transform: uppercase;
-            letter-spacing: 0.05em;
-            padding: 4px 12px;
-        }
-        [data-theme="lcars"] .term-header .th-name { color: #000; }
-        [data-theme="lcars"] .term-header .th-state { color: rgba(0,0,0,0.6); }
-        [data-theme="lcars"] .term-header .th-close { color: rgba(0,0,0,0.5); }
-        [data-theme="lcars"] .term-header .th-close:hover { color: #fff; }
-        [data-theme="lcars"] .term-panel.focused .term-header {
-            background: linear-gradient(90deg, #ff9900, var(--lcars-tan));
+            --bg: #000000; --panel-bg: #0a0a14; --border: #1a1a2e;
+            --text: #ff9900; --text-dim: #cc7700; --accent: #ff9900;
+            --green: #00cc66; --yellow: #ffcc00; --red: #cc3300; --orange: #ff6633;
+            --term-bg: #000000; --glow: none; --scanline: none;
+            --lcars-purple: #9977dd; --lcars-blue: #5599dd; --lcars-tan: #cc9966;
+            --lcars-pink: #cc6699; --lcars-red: #cc3300;
+            --dock-bg: #050510; --topbar-bg: #050510;
+            --pill-bg: #1a1a2e; --pill-active-bg: #2a2a3e;
+            --card-bg: #0a0a14; --card-hover: #141428;
+            --overlay-bg: rgba(0,0,0,0.92);
         }
 
-        /* Settings panel */
-        [data-theme="lcars"] .settings-panel {
-            background: #0a0a14;
-            border: 2px solid var(--lcars-purple);
-            border-radius: 4px 16px 16px 4px;
+        /* ═══════════════════════════════════════════
+           RESET & BASE
+           ═══════════════════════════════════════════ */
+        *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+        html, body {
+            height: 100%; overflow: hidden;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+            background: var(--bg); color: var(--text); font-size: 13px;
         }
-        [data-theme="lcars"] .settings-panel h3 { color: var(--lcars-blue); }
-        [data-theme="lcars"] .settings-btn { color: var(--lcars-tan); }
+        ::-webkit-scrollbar { width: 6px; height: 6px; }
+        ::-webkit-scrollbar-track { background: transparent; }
+        ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+        button { cursor: pointer; font-family: inherit; }
 
-        /* Status dot */
-        [data-theme="lcars"] .status-dot.online {
-            background: var(--green);
-            box-shadow: 0 0 6px var(--green);
-        }
-
-        /* Scrollbar */
-        [data-theme="lcars"] ::-webkit-scrollbar { width: 6px; }
-        [data-theme="lcars"] ::-webkit-scrollbar-track { background: #000; }
-        [data-theme="lcars"] ::-webkit-scrollbar-thumb { background: var(--lcars-purple); border-radius: 3px; }
-        [data-theme="lcars"] ::-webkit-scrollbar-thumb:hover { background: #ff9900; }
-
-        /* Empty panel */
-        [data-theme="lcars"] .panel-empty {
-            border: 2px dashed var(--lcars-purple);
-            border-radius: 0 16px 16px 0;
-            color: var(--lcars-purple);
-        }
-
-        /* ── LCARS Special Effects ──────────────── */
-
-        /* Static sidebar accent strip (no animation) */
-        [data-theme="lcars"] .sidebar::before {
-            content: '';
-            position: absolute;
-            right: 0; top: 0; bottom: 0;
-            width: 4px;
-            background: linear-gradient(180deg, var(--lcars-tan), var(--lcars-purple), var(--lcars-blue), var(--lcars-pink));
-        }
-
-        /* Pulsing glow on active session status */
-        @keyframes lcars-pulse-blue {
-            0%, 100% { box-shadow: 0 0 4px var(--lcars-blue); }
-            50% { box-shadow: 0 0 12px var(--lcars-blue), 0 0 20px rgba(85,153,221,0.3); }
-        }
-        @keyframes lcars-pulse-green {
-            0%, 100% { box-shadow: 0 0 4px var(--green); }
-            50% { box-shadow: 0 0 10px var(--green), 0 0 18px rgba(0,204,102,0.3); }
-        }
-        [data-theme="lcars"] .si-state.active {
-            animation: lcars-pulse-blue 2s ease-in-out infinite;
-        }
-        [data-theme="lcars"] .si-state.waiting {
-            animation: lcars-pulse-green 2.5s ease-in-out infinite;
-        }
-
-        /* Focused terminal border glow */
-        @keyframes lcars-border-glow {
-            0%, 100% { border-color: var(--lcars-purple); box-shadow: 0 0 8px rgba(153,119,221,0.2); }
-            50% { border-color: #bb99ff; box-shadow: 0 0 16px rgba(153,119,221,0.4); }
-        }
-        [data-theme="lcars"] .term-panel.focused {
-            animation: lcars-border-glow 3s ease-in-out infinite;
-        }
-
-        /* Status dot enhanced pulse */
-        [data-theme="lcars"] .status-dot.online {
-            background: var(--green);
-            box-shadow: 0 0 6px var(--green), 0 0 12px rgba(0,204,102,0.4);
-            animation: lcars-pulse-green 2s ease-in-out infinite;
-        }
-
-        /* Tab active glow sweep */
-        @keyframes lcars-tab-sweep {
-            0% { background-position: -100% 0; }
-            100% { background-position: 200% 0; }
-        }
-        [data-theme="lcars"] .tab.active {
-            background: linear-gradient(90deg, var(--lcars-purple) 0%, var(--lcars-purple) 40%, #bb99ff 50%, var(--lcars-purple) 60%, var(--lcars-purple) 100%);
-            background-size: 200% 100%;
-            animation: lcars-tab-sweep 3s ease-in-out infinite;
-        }
-        * { box-sizing: border-box; margin: 0; padding: 0; }
-        html, body { height: 100%; overflow: hidden; }
+        /* ═══════════════════════════════════════════
+           LAYOUT: topbar → focus area → dock
+           ═══════════════════════════════════════════ */
         body {
-            font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', monospace;
-            background: var(--bg);
-            color: var(--text);
-            display: flex;
-            flex-direction: column;
+            display: flex; flex-direction: column;
         }
 
-        /* ── Top bar ─────────────────────────────── */
+        /* ── TOP BAR ─────────────────────────────── */
         .topbar {
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            padding: 6px 12px;
-            background: var(--panel-bg);
+            height: 36px; min-height: 36px;
+            display: flex; align-items: center; justify-content: space-between;
+            padding: 0 12px;
+            background: var(--topbar-bg);
             border-bottom: 1px solid var(--border);
-            flex-shrink: 0;
-            height: 36px;
-        }
-        .topbar-left { display: flex; align-items: center; gap: 12px; }
-        .topbar h1 { font-size: 0.9rem; color: var(--accent); white-space: nowrap; }
-        .topbar h1 span { color: var(--text-dim); font-weight: normal; }
-        .topbar-right { display: flex; align-items: center; gap: 12px; font-size: 0.75rem; color: var(--text-dim); }
-        .live-dot, .status-dot.online {
-            display: inline-block; width: 6px; height: 6px;
-            background: var(--green); border-radius: 50%;
-            animation: pulse 2s infinite;
-        }
-        .status-dot.offline {
-            display: inline-block; width: 6px; height: 6px;
-            background: #f44; border-radius: 50%;
-            animation: pulse 1s infinite;
-        }
-        @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.4} }
-
-        /* Layout buttons */
-        .layout-btns { display: flex; gap: 2px; }
-        .layout-btns button {
-            background: var(--bg); border: 1px solid var(--border); color: var(--text-dim);
-            padding: 2px 8px; font-size: 0.7rem; cursor: pointer; font-family: inherit;
-        }
-        .layout-btns button:hover, .layout-btns button.active { background: var(--accent); color: #000; border-color: var(--accent); }
-        .layout-btns button:first-child { border-radius: 4px 0 0 4px; }
-        .layout-btns button:last-child { border-radius: 0 4px 4px 0; }
-
-        /* ── Main layout: sidebar + panels ────────── */
-        .main { display: flex; flex: 1; overflow: hidden; min-height: 0; }
-
-        /* Sidebar */
-        .sidebar {
-            width: 220px;
-            min-width: 180px;
-            background: var(--panel-bg);
-            border-right: 1px solid var(--border);
-            display: flex;
-            flex-direction: column;
-            flex-shrink: 0;
-            overflow: hidden;
-        }
-        .sidebar-header {
-            padding: 8px 10px;
-            font-size: 0.75rem;
-            color: var(--text-dim);
-            border-bottom: 1px solid var(--border);
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-        }
-        .sidebar-header button {
-            background: none; border: 1px solid var(--border); color: var(--accent);
-            padding: 1px 6px; border-radius: 3px; cursor: pointer; font-size: 0.7rem; font-family: inherit;
-        }
-        .sidebar-header button:hover { background: var(--accent); color: #000; }
-
-        .session-list {
-            flex: 1;
-            overflow-y: auto;
-        }
-        .session-item {
-            padding: 8px 10px;
-            border-bottom: 1px solid rgba(48,54,61,0.5);
-            cursor: pointer;
-            display: flex;
-            flex-direction: column;
-            gap: 3px;
-            transition: background 0.15s;
-            border-left: 3px solid transparent;
-        }
-        .session-item:hover { background: rgba(88,166,255,0.08); }
-        .session-item.docked { background: rgba(88,166,255,0.12); border-left-color: var(--accent); }
-        .session-item .si-top { display: flex; justify-content: space-between; align-items: center; }
-        .session-item .si-name { font-size: 0.8rem; font-weight: 600; }
-        .session-item .si-state {
-            font-size: 0.65rem; padding: 1px 6px; border-radius: 8px;
-            text-transform: uppercase; font-weight: bold;
-        }
-        .si-state.waiting { background: var(--orange); color: #000; }
-        .si-state.active { background: var(--yellow); color: #000; }
-        .si-state.idle { background: var(--green); color: #000; }
-        .si-state.error { background: var(--red); color: #fff; }
-        .si-state.unknown { background: var(--text-dim); color: #000; }
-        .session-item .si-preview {
-            font-size: 0.65rem; color: var(--text-dim);
-            white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-        }
-        .session-item .si-meta { font-size: 0.6rem; color: var(--text-dim); }
-        .session-item.unmanaged { opacity: 0.7; border-left-color: var(--orange); }
-        .si-unmanaged { font-size: 0.65rem; opacity: 0.8; }
-        .adopt-link { color: var(--accent); cursor: pointer; text-decoration: underline; }
-
-        /* Event log (collapsible at bottom of sidebar) */
-        .event-panel {
-            border-top: 1px solid var(--border);
-            max-height: 200px;
-            overflow: hidden;
-            display: flex;
-            flex-direction: column;
-        }
-        .event-panel-header {
-            padding: 6px 10px;
-            font-size: 0.7rem;
-            color: var(--text-dim);
-            cursor: pointer;
-            display: flex;
-            justify-content: space-between;
-        }
-        .event-panel-header:hover { color: var(--text); }
-        .event-panel-list {
-            overflow-y: auto;
-            font-size: 0.65rem;
-            flex: 1;
-        }
-        .event-panel-list.collapsed { display: none; }
-        .ev-row { padding: 3px 10px; border-bottom: 1px solid rgba(48,54,61,0.3); display: flex; gap: 6px; }
-        .ev-row .ev-ts { color: var(--text-dim); min-width: 55px; }
-        .ev-row .ev-session { color: var(--accent); }
-
-        /* ── Panel area ──────────────────────────── */
-        .panel-area {
-            flex: 1;
-            display: flex;
-            flex-direction: column;
-            overflow: hidden;
-            min-height: 0;
-        }
-
-        /* Tab bar for docked sessions */
-        .tab-bar {
-            display: flex;
-            background: var(--panel-bg);
-            border-bottom: 1px solid var(--border);
-            flex-shrink: 0;
-            overflow-x: auto;
-            min-height: 30px;
-        }
-        .tab {
-            padding: 5px 14px;
-            font-size: 0.75rem;
-            cursor: pointer;
-            border-right: 1px solid var(--border);
-            display: flex;
-            align-items: center;
-            gap: 6px;
-            white-space: nowrap;
-            color: var(--text-dim);
-            transition: background 0.15s;
-        }
-        .tab:hover { background: rgba(88,166,255,0.08); }
-        .tab.active { background: var(--bg); color: var(--text); border-bottom: 2px solid var(--accent); }
-        .tab .tab-close {
-            font-size: 0.65rem; opacity: 0.5; cursor: pointer;
-            padding: 0 2px;
-        }
-        .tab .tab-close:hover { opacity: 1; color: var(--red); }
-        .tab .tab-dot {
-            width: 6px; height: 6px; border-radius: 50%; display: inline-block;
-        }
-        .tab .tab-dot.waiting { background: var(--orange); }
-        .tab .tab-dot.active { background: var(--yellow); }
-        .tab .tab-dot.idle { background: var(--green); }
-        .tab .tab-dot.error { background: var(--red); }
-
-        /* Terminal panels — grid of docked terminals */
-        .panels-container {
-            flex: 1;
-            display: grid;
-            overflow: hidden;
-            min-height: 0;
-        }
-        .panels-container.layout-1 { grid-template-columns: 1fr; grid-template-rows: 1fr; }
-        .panels-container.layout-2h { grid-template-columns: 1fr 1fr; grid-template-rows: 1fr; }
-        .panels-container.layout-2v { grid-template-columns: 1fr; grid-template-rows: 1fr 1fr; }
-        .panels-container.layout-4 { grid-template-columns: 1fr 1fr; grid-template-rows: 1fr 1fr; }
-
-        .term-panel {
-            display: flex;
-            flex-direction: column;
-            border: 1px solid var(--border);
-            overflow: hidden;
-            min-height: 0;
-        }
-        .term-panel.focused { border-color: var(--accent); }
-        .term-header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            padding: 3px 8px;
-            background: var(--panel-bg);
-            border-bottom: 1px solid var(--border);
-            font-size: 0.7rem;
+            z-index: 100;
             flex-shrink: 0;
         }
-        .term-header .th-name { font-weight: 600; }
-        .term-header .th-state { color: var(--text-dim); }
-        .term-header .th-close { cursor: pointer; color: var(--text-dim); padding: 0 4px; }
-        .term-header .th-close:hover { color: var(--red); }
+        .topbar-left {
+            display: flex; align-items: center; gap: 10px;
+        }
+        .topbar-brand {
+            font-weight: 700; font-size: 14px; color: var(--accent);
+            letter-spacing: 0.03em;
+        }
+        .topbar-session {
+            color: var(--text-dim); font-size: 12px;
+            max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+        }
+        .topbar-sep { color: var(--border); }
+        .topbar-right {
+            display: flex; align-items: center; gap: 4px;
+        }
+        .topbar-status {
+            display: flex; align-items: center; gap: 5px; margin-right: 8px;
+            font-size: 11px; color: var(--text-dim);
+        }
+        .sse-dot {
+            width: 7px; height: 7px; border-radius: 50%;
+            background: var(--red); flex-shrink: 0;
+        }
+        .sse-dot.live { background: var(--green); }
+        .tb-btn {
+            background: none; border: 1px solid transparent;
+            color: var(--text-dim); padding: 3px 7px; border-radius: 4px;
+            font-size: 14px; line-height: 1; transition: all 0.15s;
+        }
+        .tb-btn:hover { background: var(--pill-bg); color: var(--text); border-color: var(--border); }
+        .tb-btn.active { color: var(--accent); background: var(--pill-active-bg); border-color: var(--accent); }
+
+        /* ── FOCUS AREA ──────────────────────────── */
+        .focus-area {
+            flex: 1; display: flex; flex-direction: column;
+            overflow: hidden; position: relative;
+        }
+        .focus-header {
+            display: flex; align-items: center; justify-content: space-between;
+            padding: 4px 12px; height: 28px; min-height: 28px;
+            background: var(--panel-bg); border-bottom: 1px solid var(--border);
+            flex-shrink: 0;
+        }
+        .focus-header-left {
+            display: flex; align-items: center; gap: 8px;
+        }
+        .fh-dot {
+            width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0;
+        }
+        .fh-name {
+            font-weight: 600; font-size: 12px; color: var(--text);
+            max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+        }
+        .fh-state {
+            font-size: 10px; padding: 1px 6px; border-radius: 8px;
+            background: var(--pill-bg); color: var(--text-dim);
+        }
+        .fh-unmanaged {
+            font-size: 10px; color: var(--orange); cursor: pointer;
+        }
+        .focus-header-right {
+            display: flex; align-items: center; gap: 6px;
+        }
+        .fh-btn {
+            background: none; border: none; color: var(--text-dim);
+            font-size: 12px; padding: 2px 6px; border-radius: 3px; cursor: pointer;
+        }
+        .fh-btn:hover { color: var(--text); background: var(--pill-bg); }
+
+        .focus-panels {
+            flex: 1; display: flex; overflow: hidden;
+        }
+        .focus-panels.split { }
+        .term-container {
+            flex: 1; position: relative; overflow: hidden;
+            display: flex; flex-direction: column;
+        }
+        .term-container + .term-container {
+            border-left: 1px solid var(--border);
+        }
+        .term-container .split-header {
+            display: none; /* shown only in split mode */
+            align-items: center; gap: 6px;
+            padding: 2px 8px; height: 22px;
+            background: var(--panel-bg); border-bottom: 1px solid var(--border);
+            font-size: 11px;
+        }
+        .focus-panels.split .term-container .split-header { display: flex; }
         .term-body {
-            background: var(--term-bg);
-            flex: 1;
-            min-height: 0;
-            overflow: hidden;
-            position: relative;
+            flex: 1; position: relative; overflow: hidden;
+        }
+        .term-body::after {
+            content: ''; position: absolute; inset: 0;
+            background: var(--scanline); pointer-events: none; z-index: 1;
         }
         .term-body .xterm { height: 100%; }
-        .term-body:focus-within { box-shadow: inset 0 0 0 1px var(--accent); }
-        /* Hide inline prompt — xterm.js handles everything now */
-        .term-body .inline-prompt { display: none; }
-        .term-body {
-            flex: 1;
-            overflow: hidden;
+
+        .focus-empty {
+            flex: 1; display: flex; align-items: center; justify-content: center;
+            color: var(--text-dim); font-size: 14px; text-align: center;
+        }
+        .focus-empty-icon { font-size: 32px; margin-bottom: 10px; opacity: 0.6; }
+
+        /* ── DOCK (bottom strip) ────────────────── */
+        .dock {
+            height: 40px; min-height: 40px;
+            display: flex; align-items: center;
+            padding: 0 8px; gap: 6px;
+            background: var(--dock-bg);
+            border-top: 1px solid var(--border);
+            overflow-x: auto; overflow-y: hidden;
+            flex-shrink: 0; z-index: 100;
+            -webkit-overflow-scrolling: touch;
+        }
+        .dock::-webkit-scrollbar { height: 3px; }
+
+        .dock-pill {
+            display: flex; align-items: center; gap: 5px;
+            padding: 4px 10px; border-radius: 14px;
+            background: var(--pill-bg); border: 1px solid transparent;
+            color: var(--text); font-size: 11px; font-weight: 500;
+            cursor: pointer; white-space: nowrap; flex-shrink: 0;
+            transition: all 0.2s ease; user-select: none;
             position: relative;
         }
+        .dock-pill:hover { background: var(--pill-active-bg); border-color: var(--border); }
+        .dock-pill.focused {
+            border-color: var(--accent); background: var(--pill-active-bg);
+            box-shadow: 0 0 0 1px var(--accent);
+        }
+        .dock-pill.unmanaged {
+            border-style: dashed; border-color: var(--border);
+        }
+        .dock-pill .pill-dot {
+            width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0;
+        }
+        .dock-pill .pill-name {
+            max-width: 100px; overflow: hidden; text-overflow: ellipsis;
+        }
+        .dock-pill .pill-eye { font-size: 10px; }
 
-        /* Settings gear */
-        .settings-btn {
-            cursor: pointer; font-size: 1.1rem; opacity: 0.6;
-            padding: 2px 6px; border-radius: 4px; user-select: none;
+        /* Status dot colors */
+        .dot-idle { background: var(--green); }
+        .dot-active { background: var(--yellow); }
+        .dot-waiting { background: var(--orange); }
+        .dot-error { background: var(--red); }
+        .dot-unknown { background: var(--text-dim); }
+
+        /* Pill pulse animation on state change */
+        @keyframes pill-pulse {
+            0% { box-shadow: 0 0 0 0 rgba(255,255,255,0.3); }
+            50% { box-shadow: 0 0 8px 3px rgba(255,255,255,0.15); }
+            100% { box-shadow: 0 0 0 0 rgba(255,255,255,0); }
         }
-        .settings-btn:hover { opacity: 1; background: var(--surface); }
-        .settings-panel {
-            display: none; position: absolute; right: 12px; top: 42px;
-            background: var(--surface); border: 1px solid var(--border);
-            border-radius: 6px; padding: 10px 14px; z-index: 100;
-            min-width: 200px; box-shadow: 0 4px 16px rgba(0,0,0,0.4);
+        .dock-pill.attention {
+            animation: pill-pulse 1s ease-in-out 3;
         }
-        .settings-panel.open { display: block; }
-        .settings-panel h3 {
-            margin: 0 0 8px 0; font-size: 0.75rem; color: var(--text-dim);
-            text-transform: uppercase; letter-spacing: 0.05em;
+        .dock-pill.error-glow {
+            box-shadow: 0 0 8px rgba(248,81,73,0.4);
+            border-color: var(--red);
         }
-        .settings-row {
-            display: flex; align-items: center; gap: 8px;
-            padding: 5px 0; font-size: 0.8rem; cursor: pointer;
+
+        /* Dock add button */
+        .dock-add {
+            display: flex; align-items: center; justify-content: center;
+            width: 28px; height: 28px; border-radius: 50%;
+            background: var(--pill-bg); border: 1px dashed var(--border);
+            color: var(--text-dim); font-size: 16px; cursor: pointer;
+            flex-shrink: 0; transition: all 0.15s;
         }
-        .settings-row:hover { color: var(--accent); }
-        .settings-row input[type="checkbox"] {
-            accent-color: var(--accent);
+        .dock-add:hover { background: var(--pill-active-bg); color: var(--accent); border-color: var(--accent); }
+
+        /* Inline create form in dock */
+        .dock-create-form {
+            display: none; align-items: center; gap: 4px; flex-shrink: 0;
+        }
+        .dock-create-form.visible { display: flex; }
+        .dock-create-input {
+            background: var(--panel-bg); border: 1px solid var(--accent);
+            color: var(--text); padding: 3px 8px; border-radius: 10px;
+            font-size: 11px; width: 120px; outline: none;
+        }
+        .dock-create-submit {
+            background: var(--accent); color: var(--bg); border: none;
+            padding: 3px 8px; border-radius: 10px; font-size: 11px; font-weight: 600;
+        }
+        .dock-create-cancel {
+            background: none; border: none; color: var(--text-dim);
+            font-size: 14px; padding: 0 4px; cursor: pointer;
+        }
+
+        /* ── PILL CONTEXT MENU ──────────────────── */
+        .ctx-menu {
+            position: fixed; z-index: 500;
+            background: var(--panel-bg); border: 1px solid var(--border);
+            border-radius: 6px; padding: 4px 0; min-width: 140px;
+            box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+            display: none;
+        }
+        .ctx-menu.visible { display: block; }
+        .ctx-item {
+            padding: 6px 12px; font-size: 12px; cursor: pointer;
+            color: var(--text); transition: background 0.1s;
+        }
+        .ctx-item:hover { background: var(--pill-bg); }
+        .ctx-item.danger { color: var(--red); }
+        .ctx-item.danger:hover { background: rgba(248,81,73,0.1); }
+
+        /* ── EXPOSÉ OVERLAY ─────────────────────── */
+        .expose-overlay {
+            position: fixed; inset: 0; z-index: 200;
+            background: var(--overlay-bg);
+            backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
+            display: flex; flex-direction: column;
+            opacity: 0; pointer-events: none;
+            transition: opacity 0.25s ease;
+        }
+        .expose-overlay.open {
+            opacity: 1; pointer-events: auto;
+        }
+        .expose-header {
+            display: flex; align-items: center; justify-content: space-between;
+            padding: 12px 20px; flex-shrink: 0;
+        }
+        .expose-title {
+            font-size: 16px; font-weight: 700; color: var(--text);
+        }
+        .expose-close {
+            background: none; border: 1px solid var(--border);
+            color: var(--text); padding: 4px 12px; border-radius: 6px;
+            font-size: 12px; cursor: pointer;
+        }
+        .expose-close:hover { background: var(--pill-bg); }
+        .expose-grid {
+            flex: 1; overflow-y: auto; padding: 8px 20px 20px;
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+            gap: 12px; align-content: start;
+        }
+        .expose-card {
+            background: var(--card-bg); border: 1px solid var(--border);
+            border-radius: 8px; padding: 12px; cursor: pointer;
+            transition: all 0.2s ease; position: relative;
+            display: flex; flex-direction: column; gap: 8px;
+            min-height: 120px;
+        }
+        .expose-card:hover {
+            background: var(--card-hover); border-color: var(--accent);
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+        }
+        .expose-card.card-error { border-color: var(--red); }
+        .card-top {
+            display: flex; align-items: center; justify-content: space-between;
+        }
+        .card-name {
+            font-weight: 600; font-size: 13px; color: var(--text);
+            overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+            max-width: 140px;
+        }
+        .card-badge {
+            font-size: 10px; padding: 1px 7px; border-radius: 8px;
+            font-weight: 600;
+        }
+        .badge-idle { background: rgba(63,185,80,0.15); color: var(--green); }
+        .badge-active { background: rgba(210,153,34,0.15); color: var(--yellow); }
+        .badge-waiting { background: rgba(219,109,40,0.15); color: var(--orange); }
+        .badge-error { background: rgba(248,81,73,0.15); color: var(--red); }
+        .badge-unknown { background: rgba(139,148,158,0.15); color: var(--text-dim); }
+        .card-preview {
+            font-size: 11px; color: var(--text-dim);
+            overflow: hidden; display: -webkit-box;
+            -webkit-line-clamp: 3; -webkit-box-orient: vertical;
+            line-height: 1.4; font-family: 'SF Mono', monospace;
+            word-break: break-all;
+        }
+        .card-meta {
+            font-size: 10px; color: var(--text-dim); margin-top: auto;
+        }
+        .card-unmanaged-tag {
+            font-size: 10px; color: var(--orange);
+        }
+
+        /* ── SETTINGS DROPDOWN ──────────────────── */
+        .settings-dropdown {
+            position: fixed; top: 36px; right: 8px; z-index: 300;
+            background: var(--panel-bg); border: 1px solid var(--border);
+            border-radius: 8px; padding: 12px; min-width: 200px;
+            box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+            display: none;
+        }
+        .settings-dropdown.open { display: block; }
+        .settings-section {
+            margin-bottom: 10px;
+        }
+        .settings-label {
+            font-size: 10px; text-transform: uppercase; letter-spacing: 0.05em;
+            color: var(--text-dim); margin-bottom: 6px; font-weight: 600;
+        }
+        .theme-grid {
+            display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px;
         }
         .theme-btn {
-            padding: 4px 10px; font-size: 0.7rem; border-radius: 4px;
-            border: 1px solid var(--border); background: var(--bg);
-            color: var(--text-dim); cursor: pointer; font-family: inherit;
+            padding: 4px 8px; border-radius: 4px; font-size: 11px;
+            border: 1px solid var(--border); background: var(--pill-bg);
+            color: var(--text); cursor: pointer; text-align: center;
+            transition: all 0.15s;
         }
-        .theme-btn:hover { border-color: var(--accent); color: var(--text); }
-        .theme-btn.active { border-color: var(--accent); color: var(--accent); background: rgba(88,166,255,0.1); }
+        .theme-btn:hover { border-color: var(--accent); }
+        .theme-btn.active { background: var(--accent); color: var(--bg); border-color: var(--accent); }
 
-        /* Empty panel placeholder */
-        .panel-empty {
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            color: var(--text-dim);
-            font-size: 0.85rem;
-            height: 100%;
+        /* ═══════════════════════════════════════════
+           THEME-SPECIFIC OVERRIDES
+           ═══════════════════════════════════════════ */
+
+        /* Cyberpunk */
+        [data-theme="cyberpunk"] .topbar {
+            border-bottom-color: var(--accent);
+            box-shadow: 0 2px 20px rgba(255,42,109,0.3);
         }
-        .panel-empty .hint { font-size: 0.7rem; margin-top: 6px; opacity: 0.6; }
+        [data-theme="cyberpunk"] .topbar-brand {
+            text-shadow: 0 0 10px var(--accent), 0 0 30px var(--accent);
+            letter-spacing: 0.1em;
+        }
+        [data-theme="cyberpunk"] .dock {
+            border-top-color: rgba(255,42,109,0.4);
+            box-shadow: 0 -2px 15px rgba(255,42,109,0.1);
+        }
+        [data-theme="cyberpunk"] .dock-pill.focused {
+            box-shadow: 0 0 10px rgba(255,42,109,0.4), 0 0 20px rgba(255,42,109,0.15);
+        }
+        @keyframes cyber-term-glow {
+            0%, 100% { box-shadow: inset 0 0 20px rgba(255,42,109,0.05); }
+            50% { box-shadow: inset 0 0 30px rgba(255,42,109,0.1); }
+        }
+        [data-theme="cyberpunk"] .term-container {
+            animation: cyber-term-glow 4s ease-in-out infinite;
+        }
+        [data-theme="cyberpunk"] .expose-card:hover {
+            box-shadow: 0 0 15px rgba(255,42,109,0.3);
+        }
+
+        /* Neon */
+        @keyframes neon-breathe {
+            0%, 100% { border-color: rgba(0,212,255,0.3); }
+            50% { border-color: rgba(0,212,255,0.6); }
+        }
+        [data-theme="neon"] .topbar {
+            border-bottom-color: rgba(0,212,255,0.3);
+        }
+        [data-theme="neon"] .topbar-brand {
+            text-shadow: 0 0 8px var(--accent);
+        }
+        [data-theme="neon"] .dock-pill.focused {
+            animation: neon-breathe 2s ease-in-out infinite;
+        }
+        @keyframes neon-dot-pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+        [data-theme="neon"] .pill-dot {
+            animation: neon-dot-pulse 2s ease-in-out infinite;
+        }
+        [data-theme="neon"] .focus-header {
+            border-bottom-color: rgba(0,212,255,0.2);
+        }
+
+        /* LCARS */
+        [data-theme="lcars"] .topbar {
+            background: linear-gradient(90deg, var(--lcars-purple) 0%, var(--lcars-blue) 30%, var(--bg) 30.5%);
+            border-bottom: 2px solid var(--lcars-tan);
+            padding-left: 200px;
+        }
+        [data-theme="lcars"] .topbar-brand {
+            font-family: 'Arial Narrow', Arial, sans-serif;
+            letter-spacing: 0.15em; text-transform: uppercase;
+        }
+        [data-theme="lcars"] .dock {
+            border-top: 2px solid var(--lcars-tan);
+        }
+        [data-theme="lcars"] .dock-pill {
+            border-radius: 20px;
+            background: linear-gradient(135deg, var(--lcars-tan), var(--lcars-purple));
+            color: #000; font-weight: 700;
+        }
+        [data-theme="lcars"] .dock-pill.focused {
+            background: linear-gradient(135deg, var(--accent), var(--lcars-blue));
+            border-color: var(--accent);
+        }
+        [data-theme="lcars"] .expose-card {
+            border-radius: 12px; border-width: 2px;
+            border-color: var(--lcars-purple);
+        }
+        [data-theme="lcars"] .focus-header {
+            background: linear-gradient(90deg, var(--lcars-purple) 0%, var(--bg) 40%);
+            border-bottom: 2px solid var(--lcars-blue);
+        }
+
+        /* Light */
+        [data-theme="light"] .topbar { box-shadow: 0 1px 3px rgba(0,0,0,0.08); }
+        [data-theme="light"] .dock { box-shadow: 0 -1px 3px rgba(0,0,0,0.06); }
+        [data-theme="light"] .dock-pill { box-shadow: 0 1px 2px rgba(0,0,0,0.06); }
+        [data-theme="light"] .expose-card { box-shadow: 0 1px 4px rgba(0,0,0,0.06); }
+        [data-theme="light"] .expose-card:hover { box-shadow: 0 4px 12px rgba(0,0,0,0.1); }
+        [data-theme="light"] .settings-dropdown { box-shadow: 0 4px 16px rgba(0,0,0,0.12); }
+
+        /* Monokai — clean warm tones */
+        [data-theme="monokai"] .topbar-brand { color: var(--accent); }
+        [data-theme="monokai"] .dock-pill.focused { border-color: var(--accent); }
+
+        /* ═══════════════════════════════════════════
+           RESPONSIVE
+           ═══════════════════════════════════════════ */
+        @media (max-width: 767px) {
+            .topbar { padding: 0 8px; }
+            .topbar-session { display: none; }
+            .topbar-sep { display: none; }
+            .topbar-status { display: none; }
+            .dock { height: 36px; gap: 4px; padding: 0 4px; }
+            .dock-pill { padding: 3px 8px; font-size: 10px; }
+            .dock-pill .pill-name { max-width: 60px; }
+            .expose-grid {
+                grid-template-columns: 1fr;
+                padding: 8px 12px;
+            }
+            .focus-header { padding: 2px 8px; }
+        }
+        @media (min-width: 768px) and (max-width: 1024px) {
+            .dock-pill .pill-name { max-width: 80px; }
+            .expose-grid { grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); }
+        }
     </style>
 </head>
 <body>
-    <!-- Top bar -->
+
+    <!-- ═══ TOP BAR ═══ -->
     <div class="topbar">
         <div class="topbar-left">
-            <h1>⚡ zpilot <span>— Mission Control</span></h1>
-            <div class="layout-btns">
-                <button onclick="setLayout('1')" title="Single pane">▣</button>
-                <button onclick="setLayout('2h')" class="active" title="Side by side">◫</button>
-                <button onclick="setLayout('2v')" title="Stacked">⬒</button>
-                <button onclick="setLayout('4')" title="2×2 grid">⊞</button>
-            </div>
+            <span class="topbar-brand">zpilot</span>
+            <span class="topbar-sep">·</span>
+            <span class="topbar-session" id="topbar-session">No session</span>
+            <span class="topbar-status">
+                <span class="sse-dot" id="sse-dot"></span>
+                <span id="sse-label">Connecting…</span>
+            </span>
         </div>
         <div class="topbar-right">
-            <span><span id="sse-dot" class="status-dot online"></span> <span>Live</span></span>
-            <span id="session-count">{{ sessions|length }} sessions</span>
-            <span id="last-update"></span>
-            <span class="settings-btn" onclick="toggleSettings()" title="Settings">⚙</span>
-        </div>
-        <div class="settings-panel" id="settings-panel">
-            <h3>Theme</h3>
-            <div style="display:flex;gap:6px;margin-bottom:12px;flex-wrap:wrap">
-                <button class="theme-btn" onclick="setTheme('dark')" data-theme-btn="dark" title="Dark">🌙 Dark</button>
-                <button class="theme-btn" onclick="setTheme('cyberpunk')" data-theme-btn="cyberpunk" title="Cyberpunk">⚡ Cyber</button>
-                <button class="theme-btn" onclick="setTheme('lcars')" data-theme-btn="lcars" title="LCARS">🖖 LCARS</button>
-                <button class="theme-btn" onclick="setTheme('neon')" data-theme-btn="neon" title="Neon">💠 Neon</button>
-                <button class="theme-btn" onclick="setTheme('monokai')" data-theme-btn="monokai" title="Monokai">🎨 Monokai</button>
-                <button class="theme-btn" onclick="setTheme('light')" data-theme-btn="light" title="Light">☀️ Light</button>
-            </div>
-            <h3>Display</h3>
-            <label class="settings-row" title="Show the event log in the sidebar">
-                <input type="checkbox" id="opt-events" onchange="applySettings()" checked>
-                Show events panel
-            </label>
-            <label class="settings-row" title="Show session preview text in the sidebar">
-                <input type="checkbox" id="opt-preview" onchange="applySettings()" checked>
-                Show session preview
-            </label>
+            <button class="tb-btn" id="btn-expose" onclick="toggleExpose()" title="Exposé (Alt+E)">⊞</button>
+            <button class="tb-btn" id="btn-split" onclick="toggleSplit()" title="Split view (Alt+S)">◫</button>
+            <button class="tb-btn" id="btn-settings" onclick="toggleSettings()" title="Settings">⚙</button>
         </div>
     </div>
 
-    <div class="main">
-        <!-- Sidebar: session list + events -->
-        <div class="sidebar">
-            <div class="sidebar-header">
-                <span>SESSIONS</span>
-                <button onclick="createSession()" title="New session">+ New</button>
+    <!-- ═══ FOCUS AREA ═══ -->
+    <div class="focus-area" id="focus-area">
+        <div class="focus-header" id="focus-header" style="display:none">
+            <div class="focus-header-left">
+                <span class="fh-dot" id="fh-dot"></span>
+                <span class="fh-name" id="fh-name"></span>
+                <span class="fh-state" id="fh-state"></span>
+                <span class="fh-unmanaged" id="fh-unmanaged" style="display:none" onclick="adoptFocused()">👁 adopt</span>
             </div>
-            <div class="session-list" id="session-list">
-                {% for s in sessions %}
-                <div class="session-item" data-session="{{ s.name }}" onclick="dockSession('{{ s.name }}')">
-                    <div class="si-top">
-                        <span class="si-name">{{ s.name }}</span>
-                        <span class="si-state {{ s.state }}">{{ s.state }}</span>
-                    </div>
-                    <div class="si-preview">{{ s.last_line }}</div>
-                    <div class="si-meta">idle {{ s.idle_seconds }}s</div>
-                </div>
-                {% endfor %}
+            <div class="focus-header-right">
+                <span id="fh-idle" style="font-size:10px;color:var(--text-dim)"></span>
             </div>
-            <div class="event-panel">
-                <div class="event-panel-header" onclick="toggleEvents()">
-                    <span>📋 EVENTS</span>
-                    <span id="ev-toggle">▼</span>
-                </div>
-                <div class="event-panel-list" id="event-list">
-                    {% for ev in events %}
-                    <div class="ev-row">
-                        <span class="ev-ts ts-epoch" data-ts="{{ ev.ts }}">{{ ev.ts | int }}</span>
-                        <span class="ev-session">{{ ev.session }}</span>
-                        <span>{{ ev.old_state or '?' }}→{{ ev.new_state }}</span>
-                    </div>
-                    {% endfor %}
+        </div>
+        <div class="focus-panels" id="focus-panels">
+            <div class="focus-empty" id="focus-empty">
+                <div>
+                    <div class="focus-empty-icon">⬇</div>
+                    <div>Select a session from the dock below</div>
+                    <div style="margin-top:6px;font-size:11px;color:var(--text-dim)">or press Alt+1-9</div>
                 </div>
             </div>
         </div>
+    </div>
 
-        <!-- Panel area: tabs + terminal grid -->
-        <div class="panel-area">
-            <div class="tab-bar" id="tab-bar"></div>
-            <div class="panels-container layout-2h" id="panels-container">
-                <div class="panel-empty" id="empty-hint">
-                    <div style="text-align:center">
-                        <div style="font-size:2rem;margin-bottom:8px">👈</div>
-                        <div>Click a session to dock it here</div>
-                        <div class="hint">Or double-click for full-screen view</div>
-                    </div>
-                </div>
+    <!-- ═══ EXPOSÉ OVERLAY ═══ -->
+    <div class="expose-overlay" id="expose-overlay">
+        <div class="expose-header">
+            <span class="expose-title">All Sessions</span>
+            <button class="expose-close" onclick="toggleExpose()">Close · Esc</button>
+        </div>
+        <div class="expose-grid" id="expose-grid"></div>
+    </div>
+
+    <!-- ═══ DOCK ═══ -->
+    <div class="dock" id="dock">
+        <!-- Pills rendered by JS -->
+        <div class="dock-create-form" id="dock-create-form">
+            <input class="dock-create-input" id="dock-create-input" placeholder="session name"
+                   onkeydown="if(event.key==='Enter')submitCreate();if(event.key==='Escape')cancelCreate()">
+            <button class="dock-create-submit" onclick="submitCreate()">Create</button>
+            <button class="dock-create-cancel" onclick="cancelCreate()">✕</button>
+        </div>
+        <div class="dock-add" id="dock-add" onclick="showCreate()" title="New session (+)">+</div>
+    </div>
+
+    <!-- ═══ CONTEXT MENU ═══ -->
+    <div class="ctx-menu" id="ctx-menu">
+        <div class="ctx-item" id="ctx-adopt" onclick="ctxAdopt()">👁 Adopt session</div>
+        <div class="ctx-item danger" id="ctx-close" onclick="ctxClose()">✕ Close session</div>
+    </div>
+
+    <!-- ═══ SETTINGS DROPDOWN ═══ -->
+    <div class="settings-dropdown" id="settings-dropdown">
+        <div class="settings-section">
+            <div class="settings-label">Theme</div>
+            <div class="theme-grid">
+                <button class="theme-btn" data-t="dark" onclick="setTheme('dark')">Dark</button>
+                <button class="theme-btn" data-t="cyberpunk" onclick="setTheme('cyberpunk')">Cyber</button>
+                <button class="theme-btn" data-t="monokai" onclick="setTheme('monokai')">Monokai</button>
+                <button class="theme-btn" data-t="light" onclick="setTheme('light')">Light</button>
+                <button class="theme-btn" data-t="neon" onclick="setTheme('neon')">Neon</button>
+                <button class="theme-btn" data-t="lcars" onclick="setTheme('lcars')">LCARS</button>
             </div>
+        </div>
+        <div class="settings-section" style="margin-bottom:0">
+            <div class="settings-label">Sessions</div>
+            <div style="font-size:12px;color:var(--text-dim)" id="settings-count">0 sessions</div>
         </div>
     </div>
 
     <script src="/static/vendor/xterm.min.js"></script>
     <script src="/static/vendor/addon-fit.min.js"></script>
     <script>
-        // ── State ──────────────────────────────────
-        let dockedSessions = [];       // ordered list of docked session names
-        let activeTab = null;           // name of focused tab
-        let currentLayout = '2h';       // 1, 2h, 2v, 4
-        let sessionsData = {};          // session name -> latest data from SSE
+    (function() {
+        'use strict';
 
-        // ── Settings (persisted to localStorage) ──
-        const SETTINGS_KEY = 'zpilot_settings';
-        let settings = {
-            theme: 'dark',
-            showEvents: true,
-            showPreview: true,
-        };
+        // ══════════════════════════════════════════
+        // STATE
+        // ══════════════════════════════════════════
+        let sessionsData = {};          // name → session object
+        let sessionsList = [];          // ordered array of session objects
+        let focusedSessions = [];       // [primary, secondary?]
+        let splitMode = false;
+        let exposeOpen = false;
+        let attentionTimers = {};       // name → timeout id
+        let attentionSet = new Set();   // names needing attention (sort left)
+        let ctxTarget = null;           // right-click target session name
+
+        // Terminal state
+        let terminals = {};
+        let termSockets = {};
+        let termFitAddons = {};
+        let termLastSize = {};
+        const wsRetryDelay = {};
+
+        // ══════════════════════════════════════════
+        // SETTINGS (localStorage)
+        // ══════════════════════════════════════════
+        const STORAGE_KEY = 'zpilot_v2';
+        let settings = { theme: 'dark', focused: null, focused2: null, split: false, expose: false };
         try {
-            const saved = JSON.parse(localStorage.getItem(SETTINGS_KEY));
-            if (saved) Object.assign(settings, saved);
+            const s = JSON.parse(localStorage.getItem(STORAGE_KEY));
+            if (s) Object.assign(settings, s);
         } catch(e) {}
-
         function saveSettings() {
-            localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
+            settings.focused = focusedSessions[0] || null;
+            settings.focused2 = focusedSessions[1] || null;
+            settings.split = splitMode;
+            settings.expose = exposeOpen;
+            localStorage.setItem(STORAGE_KEY, JSON.stringify(settings));
         }
 
-        function toggleSettings() {
-            const panel = document.getElementById('settings-panel');
-            panel.classList.toggle('open');
+        // ══════════════════════════════════════════
+        // UTILITIES
+        // ══════════════════════════════════════════
+        function esc(text) {
+            const d = document.createElement('div');
+            d.textContent = text || '';
+            return d.innerHTML;
         }
 
+        const STATE_PRIORITY = { error: 0, active: 1, waiting: 2, idle: 3, unknown: 4 };
+        function statePriority(state) { return STATE_PRIORITY[state] ?? 5; }
+
+        function dotClass(state) { return 'dot-' + (state || 'unknown'); }
+        function badgeClass(state) { return 'badge-' + (state || 'unknown'); }
+
+        function formatIdle(seconds) {
+            if (seconds == null) return '';
+            if (seconds < 60) return seconds + 's';
+            if (seconds < 3600) return Math.floor(seconds / 60) + 'm';
+            return Math.floor(seconds / 3600) + 'h';
+        }
+
+        // ══════════════════════════════════════════
+        // THEME
+        // ══════════════════════════════════════════
         function setTheme(theme) {
             settings.theme = theme;
             document.documentElement.setAttribute('data-theme', theme);
-            // Update active button
-            document.querySelectorAll('.theme-btn').forEach(btn => {
-                btn.classList.toggle('active', btn.dataset.themeBtn === theme);
-            });
-            // Update xterm.js terminal backgrounds
+            document.querySelectorAll('.theme-btn').forEach(b =>
+                b.classList.toggle('active', b.dataset.t === theme));
+            // Update xterm backgrounds
             const termBg = getComputedStyle(document.documentElement).getPropertyValue('--term-bg').trim();
             Object.values(terminals).forEach(term => {
-                term.options.theme = { background: termBg };
+                term.options.theme = Object.assign({}, term.options.theme, { background: termBg });
             });
             saveSettings();
         }
 
-        // Close settings when clicking outside
+        // ══════════════════════════════════════════
+        // DOCK RENDERING
+        // ══════════════════════════════════════════
+        function renderDock() {
+            const dock = document.getElementById('dock');
+            // Remove old pills (keep create form and add button)
+            dock.querySelectorAll('.dock-pill').forEach(p => p.remove());
+
+            // Sort: attention first, then by state priority, then name
+            const sorted = [...sessionsList].sort((a, b) => {
+                const aAtt = attentionSet.has(a.name) ? 0 : 1;
+                const bAtt = attentionSet.has(b.name) ? 0 : 1;
+                if (aAtt !== bAtt) return aAtt - bAtt;
+                const aPri = statePriority(a.state);
+                const bPri = statePriority(b.state);
+                if (aPri !== bPri) return aPri - bPri;
+                return a.name.localeCompare(b.name);
+            });
+
+            const form = document.getElementById('dock-create-form');
+            sorted.forEach(s => {
+                const pill = document.createElement('div');
+                pill.className = 'dock-pill';
+                if (focusedSessions.includes(s.name)) pill.classList.add('focused');
+                if (!s.managed) pill.classList.add('unmanaged');
+                if (s.state === 'error') pill.classList.add('error-glow');
+                if (attentionSet.has(s.name)) pill.classList.add('attention');
+                pill.dataset.session = s.name;
+
+                pill.innerHTML = `<span class="pill-dot ${dotClass(s.state)}"></span>` +
+                    `<span class="pill-name">${esc(s.name)}</span>` +
+                    (!s.managed ? '<span class="pill-eye">👁</span>' : '');
+
+                pill.onclick = () => focusSession(s.name);
+                pill.oncontextmenu = (e) => { e.preventDefault(); showCtxMenu(e, s.name); };
+                dock.insertBefore(pill, form);
+            });
+        }
+
+        // ══════════════════════════════════════════
+        // FOCUS AREA RENDERING
+        // ══════════════════════════════════════════
+        function renderFocus() {
+            const panels = document.getElementById('focus-panels');
+            const header = document.getElementById('focus-header');
+            const empty = document.getElementById('focus-empty');
+            const topSession = document.getElementById('topbar-session');
+
+            if (focusedSessions.length === 0) {
+                header.style.display = 'none';
+                panels.innerHTML = '';
+                panels.appendChild(empty);
+                empty.style.display = '';
+                panels.classList.remove('split');
+                topSession.textContent = 'No session';
+                return;
+            }
+
+            if (empty.parentNode === panels) panels.removeChild(empty);
+            header.style.display = '';
+
+            const primary = focusedSessions[0];
+            const s = sessionsData[primary];
+            if (s) {
+                document.getElementById('fh-dot').className = 'fh-dot ' + dotClass(s.state);
+                document.getElementById('fh-name').textContent = s.name;
+                document.getElementById('fh-state').textContent = s.state || 'unknown';
+                document.getElementById('fh-idle').textContent = 'idle ' + formatIdle(s.idle_seconds);
+                const unm = document.getElementById('fh-unmanaged');
+                unm.style.display = s.managed ? 'none' : '';
+                topSession.textContent = s.name;
+            }
+
+            const showSplit = splitMode && focusedSessions.length >= 2;
+            panels.classList.toggle('split', showSplit);
+
+            const visible = showSplit ? focusedSessions.slice(0, 2) : [primary];
+
+            // Reconcile containers
+            const existing = new Set();
+            panels.querySelectorAll('.term-container').forEach(el => {
+                const name = el.dataset.session;
+                if (!visible.includes(name)) {
+                    el.remove();
+                } else {
+                    existing.add(name);
+                }
+            });
+
+            visible.forEach(name => {
+                if (existing.has(name)) return;
+                const container = document.createElement('div');
+                container.className = 'term-container';
+                container.dataset.session = name;
+                const si = sessionsData[name] || {};
+                container.innerHTML =
+                    `<div class="split-header"><span class="pill-dot ${dotClass(si.state)}" style="width:6px;height:6px"></span> ${esc(name)}</div>` +
+                    `<div class="term-body" id="term-${name}"></div>`;
+                panels.appendChild(container);
+            });
+
+            // Attach terminals
+            visible.forEach(name => {
+                const el = document.getElementById('term-' + name);
+                if (!el) return;
+                const term = createTerminal(name);
+                if (!term.element || !el.contains(term.element)) {
+                    term.open(el);
+                    setTimeout(() => fitTerminal(name), 50);
+                }
+                connectTerminalWS(name);
+            });
+
+            // Destroy terminals not visible
+            Object.keys(terminals).forEach(name => {
+                if (!visible.includes(name)) {
+                    destroyTerminal(name);
+                }
+            });
+
+            saveSettings();
+        }
+
+        function focusSession(name) {
+            if (exposeOpen) toggleExpose();
+            if (splitMode && focusedSessions.length > 0 && focusedSessions[0] !== name) {
+                if (focusedSessions.length < 2) {
+                    focusedSessions.push(name);
+                } else if (!focusedSessions.includes(name)) {
+                    focusedSessions[1] = name;
+                } else if (focusedSessions[1] === name) {
+                    // Already secondary — swap to primary
+                    focusedSessions = [name, focusedSessions[0]];
+                }
+                // If it's already primary, do nothing
+            } else {
+                if (focusedSessions[0] === name) return; // already focused
+                focusedSessions = splitMode && focusedSessions.length >= 2
+                    ? [name, focusedSessions[0]] : [name];
+            }
+
+            // Clear attention
+            attentionSet.delete(name);
+
+            renderFocus();
+            renderDock();
+        }
+
+        // ══════════════════════════════════════════
+        // EXPOSÉ
+        // ══════════════════════════════════════════
+        function renderExpose() {
+            const grid = document.getElementById('expose-grid');
+            const sorted = [...sessionsList].sort((a, b) => {
+                const ap = statePriority(a.state), bp = statePriority(b.state);
+                if (ap !== bp) return ap - bp;
+                return a.name.localeCompare(b.name);
+            });
+            grid.innerHTML = sorted.map(s => {
+                const isError = s.state === 'error';
+                return `<div class="expose-card ${isError ? 'card-error' : ''}" onclick="focusSession('${esc(s.name)}')" data-session="${esc(s.name)}">
+                    <div class="card-top">
+                        <span class="card-name">${esc(s.name)}</span>
+                        <span class="card-badge ${badgeClass(s.state)}">${s.state || 'unknown'}</span>
+                    </div>
+                    <div class="card-preview">${esc(s.last_line || s.last_lines?.[s.last_lines?.length-1] || '')}</div>
+                    <div class="card-meta">
+                        ${!s.managed ? '<span class="card-unmanaged-tag">👁 unmanaged</span> · ' : ''}
+                        idle ${formatIdle(s.idle_seconds)}
+                    </div>
+                </div>`;
+            }).join('');
+        }
+
+        function toggleExpose() {
+            exposeOpen = !exposeOpen;
+            const overlay = document.getElementById('expose-overlay');
+            const btn = document.getElementById('btn-expose');
+            overlay.classList.toggle('open', exposeOpen);
+            btn.classList.toggle('active', exposeOpen);
+            if (exposeOpen) renderExpose();
+            saveSettings();
+        }
+
+        // ══════════════════════════════════════════
+        // SPLIT
+        // ══════════════════════════════════════════
+        function toggleSplit() {
+            splitMode = !splitMode;
+            document.getElementById('btn-split').classList.toggle('active', splitMode);
+            if (!splitMode && focusedSessions.length > 1) {
+                const keep = focusedSessions[0];
+                focusedSessions = [keep];
+            }
+            renderFocus();
+            saveSettings();
+        }
+
+        // ══════════════════════════════════════════
+        // SETTINGS PANEL
+        // ══════════════════════════════════════════
+        function toggleSettings() {
+            const dd = document.getElementById('settings-dropdown');
+            dd.classList.toggle('open');
+        }
         document.addEventListener('click', (e) => {
-            const panel = document.getElementById('settings-panel');
-            const btn = document.querySelector('.settings-btn');
-            if (panel?.classList.contains('open') && !panel.contains(e.target) && !btn.contains(e.target)) {
-                panel.classList.remove('open');
+            const dd = document.getElementById('settings-dropdown');
+            const btn = document.getElementById('btn-settings');
+            if (dd.classList.contains('open') && !dd.contains(e.target) && !btn.contains(e.target)) {
+                dd.classList.remove('open');
+            }
+            // Also close ctx menu
+            const ctx = document.getElementById('ctx-menu');
+            if (ctx.classList.contains('visible') && !ctx.contains(e.target)) {
+                ctx.classList.remove('visible');
             }
         });
 
-        function applySettings() {
-            settings.showEvents = document.getElementById('opt-events').checked;
-            settings.showPreview = document.getElementById('opt-preview').checked;
-            saveSettings();
-
-            // Apply events panel visibility
-            const evPanel = document.querySelector('.event-panel');
-            if (evPanel) evPanel.style.display = settings.showEvents ? '' : 'none';
-
-            // Apply preview visibility
-            document.querySelectorAll('.si-preview').forEach(el => {
-                el.style.display = settings.showPreview ? '' : 'none';
-            });
+        // ══════════════════════════════════════════
+        // CONTEXT MENU
+        // ══════════════════════════════════════════
+        function showCtxMenu(e, name) {
+            ctxTarget = name;
+            const ctx = document.getElementById('ctx-menu');
+            const s = sessionsData[name];
+            document.getElementById('ctx-adopt').style.display = (s && !s.managed) ? '' : 'none';
+            ctx.style.left = e.clientX + 'px';
+            ctx.style.top = (e.clientY - ctx.offsetHeight - 8) + 'px';
+            // Clamp to viewport
+            const rect = ctx.getBoundingClientRect();
+            if (rect.top < 0) ctx.style.top = '4px';
+            if (rect.right > window.innerWidth) ctx.style.left = (window.innerWidth - 160) + 'px';
+            ctx.classList.add('visible');
         }
-
-        // Initialize settings UI on load
-        function initSettings() {
-            document.getElementById('opt-events').checked = settings.showEvents;
-            document.getElementById('opt-preview').checked = settings.showPreview;
-            setTheme(settings.theme);
-            applySettings();
-        }
-
-        // xterm.js instances and WebSocket connections
-        let terminals = {};             // session -> Terminal instance
-        let termSockets = {};           // session -> WebSocket
-        let termFitAddons = {};         // session -> FitAddon
-        let termLastSize = {};          // session -> {cols, rows} for debouncing resize
-
-        const maxPanels = { '1': 1, '2h': 2, '2v': 2, '4': 4 };
-
-        // ── SSE ────────────────────────────────────
-        let sseRetryDelay = 1000;
-        function connectSSE() {
-            const src = new EventSource('/api/stream');
-            src.onmessage = (e) => addEvent(JSON.parse(e.data));
-            src.addEventListener('status', (e) => {
-                const sessions = JSON.parse(e.data);
-                sessions.sort((a, b) => a.name.localeCompare(b.name));
-                sessions.forEach(s => sessionsData[s.name] = s);
-                updateSidebar(sessions);
-                updateTabDots();
-                document.getElementById('session-count').textContent = sessions.length + ' sessions';
-                document.getElementById('last-update').textContent = new Date().toLocaleTimeString();
-                sseRetryDelay = 1000;
-            });
-            src.onerror = () => {
-                src.close();
-                console.warn(`[zpilot] SSE lost, reconnecting in ${sseRetryDelay/1000}s…`);
-                document.getElementById('sse-dot').className = 'status-dot offline';
-                document.getElementById('sse-dot').nextElementSibling.textContent = 'Reconnecting…';
-                setTimeout(connectSSE, sseRetryDelay);
-                sseRetryDelay = Math.min(sseRetryDelay * 2, 30000);
-            };
-            src.onopen = () => {
-                document.getElementById('sse-dot').className = 'status-dot online';
-                document.getElementById('sse-dot').nextElementSibling.textContent = 'Live';
-                sseRetryDelay = 1000;
-            };
-        }
-        if (document.readyState === 'complete') connectSSE();
-        else window.addEventListener('load', connectSSE);
-
-        // ── Sidebar ────────────────────────────────
-        function updateSidebar(sessions) {
-            const list = document.getElementById('session-list');
-            const icons = {waiting:'🔔', active:'⏳', idle:'✅', error:'❌', unknown:'❓'};
-            list.innerHTML = sessions.map(s => `
-                <div class="session-item ${dockedSessions.includes(s.name) ? 'docked' : ''} ${s.managed ? '' : 'unmanaged'}"
-                     data-session="${s.name}"
-                     onclick="dockSession('${s.name}')"
-                     ondblclick="dockSession('${s.name}', true)">
-                    <div class="si-top">
-                        <span class="si-name">${esc(s.name)}${s.managed ? '' : ' <span class="si-unmanaged" title="Unmanaged session — read-only, click to adopt">👁</span>'}</span>
-                        <span class="si-state ${s.state}">${s.state}</span>
-                    </div>
-                    <div class="si-preview">${esc(s.last_line || '')}</div>
-                    <div class="si-meta">idle ${s.idle_seconds}s${s.managed ? '' : ' · <a class="adopt-link" onclick="event.stopPropagation();adoptSession(\''+s.name+'\')">adopt</a>'}</div>
-                </div>
-            `).join('');
-        }
-
-        // ── Adopt session ────────────────────────────
-        async function adoptSession(name) {
+        async function ctxAdopt() {
+            if (!ctxTarget) return;
+            document.getElementById('ctx-menu').classList.remove('visible');
             try {
-                const r = await fetch(`/api/session/${encodeURIComponent(name)}/adopt`, {method:'POST'});
-                const d = await r.json();
-                if (d.status === 'adopted') {
-                    refreshSessions();
-                } else {
-                    console.warn('Adopt result:', d);
-                }
+                await fetch(`/api/session/${encodeURIComponent(ctxTarget)}/adopt`, { method: 'POST' });
             } catch(e) { console.error('Adopt failed:', e); }
+            ctxTarget = null;
         }
-
-        // ── Dock / Undock ──────────────────────────
-        function dockSession(name, fullscreen) {
-            if (fullscreen) { setLayout('1'); }
-            if (!dockedSessions.includes(name)) {
-                const max = maxPanels[currentLayout];
-                if (dockedSessions.length >= max) {
-                    undockSession(dockedSessions[dockedSessions.length - 1], true);
+        async function ctxClose() {
+            if (!ctxTarget) return;
+            document.getElementById('ctx-menu').classList.remove('visible');
+            if (!confirm(`Close session "${ctxTarget}"?`)) { ctxTarget = null; return; }
+            try {
+                await fetch(`/api/session/${encodeURIComponent(ctxTarget)}`, { method: 'DELETE' });
+                if (focusedSessions.includes(ctxTarget)) {
+                    focusedSessions = focusedSessions.filter(n => n !== ctxTarget);
+                    destroyTerminal(ctxTarget);
+                    renderFocus();
                 }
-                dockedSessions.push(name);
-            }
-            activeTab = name;
-            renderPanels();
+            } catch(e) { console.error('Delete failed:', e); }
+            ctxTarget = null;
+        }
+        // Expose globally for onclick
+        window.focusSession = focusSession;
+
+        // ══════════════════════════════════════════
+        // SESSION CREATE (dock inline form)
+        // ══════════════════════════════════════════
+        function showCreate() {
+            document.getElementById('dock-create-form').classList.add('visible');
+            document.getElementById('dock-add').style.display = 'none';
+            const inp = document.getElementById('dock-create-input');
+            inp.value = '';
+            inp.focus();
+        }
+        function cancelCreate() {
+            document.getElementById('dock-create-form').classList.remove('visible');
+            document.getElementById('dock-add').style.display = '';
+        }
+        async function submitCreate() {
+            const inp = document.getElementById('dock-create-input');
+            const name = inp.value.trim();
+            if (!name) return;
+            cancelCreate();
+            try {
+                await fetch(`/api/session/${encodeURIComponent(name)}`, { method: 'POST' });
+                setTimeout(() => focusSession(name), 1500);
+            } catch(e) { console.error('Create failed:', e); }
+        }
+        // Expose for onclick
+        window.showCreate = showCreate;
+        window.cancelCreate = cancelCreate;
+        window.submitCreate = submitCreate;
+        window.toggleExpose = toggleExpose;
+        window.toggleSplit = toggleSplit;
+        window.toggleSettings = toggleSettings;
+        window.setTheme = setTheme;
+        window.ctxAdopt = ctxAdopt;
+        window.ctxClose = ctxClose;
+
+        function adoptFocused() {
+            const name = focusedSessions[0];
+            if (!name) return;
+            fetch(`/api/session/${encodeURIComponent(name)}/adopt`, { method: 'POST' })
+                .catch(e => console.error('Adopt failed:', e));
+        }
+        window.adoptFocused = adoptFocused;
+
+        // ══════════════════════════════════════════
+        // ATTENTION SYSTEM
+        // ══════════════════════════════════════════
+        function triggerAttention(name) {
+            attentionSet.add(name);
+            clearTimeout(attentionTimers[name]);
+            attentionTimers[name] = setTimeout(() => {
+                // Remove animation class after 3s but keep sort priority until focused
+                const pill = document.querySelector(`.dock-pill[data-session="${name}"]`);
+                if (pill) pill.classList.remove('attention');
+            }, 3000);
+            renderDock();
         }
 
-        function undockSession(name, quiet) {
-            dockedSessions = dockedSessions.filter(n => n !== name);
-            destroyTerminal(name);
-            if (activeTab === name) activeTab = dockedSessions[0] || null;
-            if (!quiet) renderPanels();
-        }
-
-        // ── Layout ─────────────────────────────────
-        function setLayout(layout) {
-            currentLayout = layout;
-            document.querySelectorAll('.layout-btns button').forEach(b => b.classList.remove('active'));
-            document.querySelector(`.layout-btns button[onclick="setLayout('${layout}')"]`).classList.add('active');
-            const max = maxPanels[layout];
-            while (dockedSessions.length > max) {
-                undockSession(dockedSessions[dockedSessions.length - 1], true);
-            }
-            renderPanels();
-        }
-
-        // ── xterm.js Terminal Management ───────────
+        // ══════════════════════════════════════════
+        // xterm.js TERMINAL MANAGEMENT
+        // ══════════════════════════════════════════
         function createTerminal(name) {
             if (terminals[name]) return terminals[name];
 
             const term = new Terminal({
                 theme: {
-                    background: '#010409',
-                    foreground: '#c8d3de',
-                    cursor: '#3fb950',
-                    cursorAccent: '#010409',
-                    selectionBackground: 'rgba(88,166,255,0.3)',
-                    black: '#484f58',
-                    red: '#ff7b72',
-                    green: '#3fb950',
-                    yellow: '#d29922',
-                    blue: '#58a6ff',
-                    magenta: '#bc8cff',
-                    cyan: '#39d353',
-                    white: '#b1bac4',
-                    brightBlack: '#6e7681',
-                    brightRed: '#ffa198',
-                    brightGreen: '#56d364',
-                    brightYellow: '#e3b341',
-                    brightBlue: '#79c0ff',
-                    brightMagenta: '#d2a8ff',
-                    brightCyan: '#56d364',
-                    brightWhite: '#f0f6fc',
+                    background: '#010409', foreground: '#c8d3de', cursor: '#3fb950',
+                    cursorAccent: '#010409', selectionBackground: 'rgba(88,166,255,0.3)',
+                    black: '#484f58', red: '#ff7b72', green: '#3fb950', yellow: '#d29922',
+                    blue: '#58a6ff', magenta: '#bc8cff', cyan: '#39d353', white: '#b1bac4',
+                    brightBlack: '#6e7681', brightRed: '#ffa198', brightGreen: '#56d364',
+                    brightYellow: '#e3b341', brightBlue: '#79c0ff', brightMagenta: '#d2a8ff',
+                    brightCyan: '#56d364', brightWhite: '#f0f6fc',
                 },
                 fontFamily: "'SF Mono', 'Cascadia Code', 'Fira Code', monospace",
-                fontSize: 13,
-                lineHeight: 1.2,
-                cursorBlink: true,
-                cursorStyle: 'block',
-                scrollback: 5000,
-                allowProposedApi: true,
+                fontSize: 13, lineHeight: 1.2, cursorBlink: true, cursorStyle: 'block',
+                scrollback: 5000, allowProposedApi: true,
             });
 
             const fitAddon = new FitAddon.FitAddon();
@@ -1188,7 +1051,6 @@
             terminals[name] = term;
             termFitAddons[name] = fitAddon;
 
-            // Forward keystrokes to WebSocket
             term.onData((data) => {
                 const ws = termSockets[name];
                 if (ws && ws.readyState === WebSocket.OPEN) {
@@ -1196,7 +1058,6 @@
                 }
             });
 
-            // Forward resize events to WebSocket — debounced, only if dimensions changed
             term.onResize(({ cols, rows }) => {
                 const last = termLastSize[name];
                 if (last && last.cols === cols && last.rows === rows) return;
@@ -1207,24 +1068,23 @@
                 }
             });
 
+            // Apply current theme bg
+            const termBg = getComputedStyle(document.documentElement).getPropertyValue('--term-bg').trim();
+            if (termBg) term.options.theme = Object.assign({}, term.options.theme, { background: termBg });
+
             return term;
         }
 
-        const wsRetryDelay = {};  // per-session backoff
         function connectTerminalWS(name) {
             if (termSockets[name]) {
                 if (termSockets[name].readyState === WebSocket.OPEN ||
                     termSockets[name].readyState === WebSocket.CONNECTING) return;
             }
-
             const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
             const ws = new WebSocket(`${proto}//${location.host}/ws/terminal/${name}`);
             termSockets[name] = ws;
 
-            ws.onopen = () => {
-                console.log(`[zpilot] WebSocket connected: ${name}`);
-                wsRetryDelay[name] = 1000; // reset backoff on success
-            };
+            ws.onopen = () => { wsRetryDelay[name] = 1000; };
 
             ws.onmessage = (e) => {
                 const term = terminals[name];
@@ -1232,241 +1092,199 @@
                 try {
                     const msg = JSON.parse(e.data);
                     if (msg.type === 'output') {
-                        term.write('\x1b[2J\x1b[H');  // clear screen + cursor home
-                        term.clear();                    // clear scrollback
+                        term.write('\x1b[2J\x1b[H');
+                        term.clear();
                         term.write(msg.data);
                     } else if (msg.type === 'append') {
                         term.write(msg.data);
                     }
                 } catch (err) {
-                    // Plain text fallback
                     term.write(e.data);
                 }
             };
 
             ws.onclose = () => {
                 const delay = wsRetryDelay[name] || 1000;
-                console.warn(`[zpilot] WebSocket closed: ${name}, reconnecting in ${delay/1000}s…`);
                 setTimeout(() => {
-                    if (dockedSessions.includes(name)) connectTerminalWS(name);
+                    if (focusedSessions.includes(name)) connectTerminalWS(name);
                 }, delay);
                 wsRetryDelay[name] = Math.min(delay * 2, 30000);
             };
 
-            ws.onerror = (e) => {
-                console.error(`[zpilot] WebSocket error: ${name}`, e);
-            };
+            ws.onerror = (e) => { console.error(`[zpilot] WS error: ${name}`, e); };
         }
 
         function destroyTerminal(name) {
-            if (termSockets[name]) {
-                termSockets[name].close();
-                delete termSockets[name];
-            }
+            if (termSockets[name]) { termSockets[name].close(); delete termSockets[name]; }
             delete wsRetryDelay[name];
-            if (terminals[name]) {
-                terminals[name].dispose();
-                delete terminals[name];
-            }
-            if (termFitAddons[name]) {
-                delete termFitAddons[name];
-            }
+            if (terminals[name]) { terminals[name].dispose(); delete terminals[name]; }
+            if (termFitAddons[name]) { delete termFitAddons[name]; }
+            delete termLastSize[name];
         }
 
         function fitTerminal(name) {
-            const fitAddon = termFitAddons[name];
-            if (fitAddon) {
-                try {
-                    fitAddon.fit();
-                } catch(e) {}
-            }
+            const fa = termFitAddons[name];
+            if (fa) { try { fa.fit(); } catch(e) {} }
         }
 
-        // ── Render panels ──────────────────────────
-        function renderPanels() {
-            const container = document.getElementById('panels-container');
-            container.className = `panels-container layout-${currentLayout}`;
+        // ══════════════════════════════════════════
+        // SSE CONNECTION
+        // ══════════════════════════════════════════
+        let sseRetryDelay = 1000;
+        function connectSSE() {
+            const src = new EventSource('/api/stream');
 
-            // Render tab bar (lightweight, safe to rebuild)
-            const tabBar = document.getElementById('tab-bar');
-            tabBar.innerHTML = dockedSessions.map(name => {
-                const s = sessionsData[name] || {};
-                return `<div class="tab ${name === activeTab ? 'active' : ''}" onclick="activeTab='${name}'; renderPanels();">
-                    <span class="tab-dot ${s.state || 'unknown'}"></span>
-                    ${esc(name)}
-                    <span class="tab-close" onclick="event.stopPropagation(); undockSession('${name}')">&times;</span>
-                </div>`;
-            }).join('');
+            src.addEventListener('status', (e) => {
+                const sessions = JSON.parse(e.data);
+                const oldStates = {};
+                sessionsList.forEach(s => oldStates[s.name] = s.state);
 
-            if (dockedSessions.length === 0) {
-                container.innerHTML = `<div class="panel-empty"><div style="text-align:center">
-                    <div style="font-size:2rem;margin-bottom:8px">👈</div>
-                    <div>Click a session to dock it here</div>
-                    <div class="hint">Use layout buttons to show 1, 2, or 4 panels</div>
-                </div></div>`;
+                sessions.sort((a, b) => a.name.localeCompare(b.name));
+                sessionsList = sessions;
+                sessionsData = {};
+                sessions.forEach(s => {
+                    sessionsData[s.name] = s;
+                    // Trigger attention if state changed (and not currently focused)
+                    if (oldStates[s.name] !== undefined && oldStates[s.name] !== s.state) {
+                        if (!focusedSessions.includes(s.name)) {
+                            triggerAttention(s.name);
+                        }
+                    }
+                });
+
+                // Update focus header if it's showing
+                if (focusedSessions.length > 0) {
+                    const ps = sessionsData[focusedSessions[0]];
+                    if (ps) {
+                        document.getElementById('fh-dot').className = 'fh-dot ' + dotClass(ps.state);
+                        document.getElementById('fh-state').textContent = ps.state || 'unknown';
+                        document.getElementById('fh-idle').textContent = 'idle ' + formatIdle(ps.idle_seconds);
+                        document.getElementById('fh-unmanaged').style.display = ps.managed ? 'none' : '';
+                    }
+                    // If focused session disappeared, unfocus
+                    focusedSessions = focusedSessions.filter(n => sessionsData[n]);
+                    if (focusedSessions.length === 0) renderFocus();
+                }
+
+                renderDock();
+                document.getElementById('settings-count').textContent = sessions.length + ' sessions';
+                if (exposeOpen) renderExpose();
+                sseRetryDelay = 1000;
+            });
+
+            src.onmessage = (e) => {
+                // "message" events are state change events
+                try {
+                    const ev = JSON.parse(e.data);
+                    if (ev.session && ev.new_state) {
+                        if (!focusedSessions.includes(ev.session)) {
+                            triggerAttention(ev.session);
+                        }
+                    }
+                } catch(err) {}
+            };
+
+            src.onerror = () => {
+                src.close();
+                document.getElementById('sse-dot').className = 'sse-dot';
+                document.getElementById('sse-label').textContent = 'Reconnecting…';
+                setTimeout(connectSSE, sseRetryDelay);
+                sseRetryDelay = Math.min(sseRetryDelay * 2, 30000);
+            };
+
+            src.onopen = () => {
+                document.getElementById('sse-dot').className = 'sse-dot live';
+                document.getElementById('sse-label').textContent = 'Live';
+                sseRetryDelay = 1000;
+            };
+        }
+
+        // ══════════════════════════════════════════
+        // KEYBOARD SHORTCUTS
+        // ══════════════════════════════════════════
+        document.addEventListener('keydown', (e) => {
+            // Alt+1-9: focus session by dock position
+            if (e.altKey && e.key >= '1' && e.key <= '9') {
+                e.preventDefault();
+                const idx = parseInt(e.key) - 1;
+                const pills = document.querySelectorAll('.dock-pill');
+                if (pills[idx]) {
+                    const name = pills[idx].dataset.session;
+                    if (name) focusSession(name);
+                }
                 return;
             }
-
-            const max = maxPanels[currentLayout];
-            let visible;
-            if (currentLayout === '1') {
-                visible = activeTab ? [activeTab] : [dockedSessions[0]];
-            } else {
-                visible = dockedSessions.slice(0, max);
+            // Alt+E or Ctrl+Shift+E: toggle exposé
+            if ((e.altKey && e.key.toLowerCase() === 'e') ||
+                (e.ctrlKey && e.shiftKey && e.key.toLowerCase() === 'e')) {
+                e.preventDefault();
+                toggleExpose();
+                return;
             }
-
-            // Reconcile DOM: keep existing panels, add new ones, remove stale ones
-            const existingPanels = container.querySelectorAll('.term-panel[data-session]');
-            const existingNames = new Set();
-            existingPanels.forEach(el => existingNames.add(el.dataset.session));
-            const visibleSet = new Set(visible);
-
-            // Remove panels not in visible set
-            existingPanels.forEach(el => {
-                if (!visibleSet.has(el.dataset.session)) {
-                    el.remove();
-                }
-            });
-            // Remove placeholder empty panels
-            container.querySelectorAll('.panel-empty').forEach(el => el.remove());
-
-            // Add or update visible panels
-            visible.forEach(name => {
-                const s = sessionsData[name] || {};
-                const isFocused = name === activeTab;
-                let panel = container.querySelector(`.term-panel[data-session="${name}"]`);
-
-                if (!panel) {
-                    // Create new panel
-                    panel = document.createElement('div');
-                    panel.className = `term-panel ${isFocused ? 'focused' : ''}`;
-                    panel.dataset.session = name;
-                    panel.onclick = function() { if (activeTab !== name) { activeTab = name; renderPanels(); }};
-                    panel.innerHTML = `
-                        <div class="term-header">
-                            <span class="th-name">${esc(name)}</span>
-                            <span style="display:flex;gap:4px;align-items:center">
-                                <span class="th-close" onclick="event.stopPropagation(); undockSession('${name}')">&times;</span>
-                            </span>
-                        </div>
-                        <div class="term-body" id="term-${name}"></div>`;
-                    container.appendChild(panel);
-                } else {
-                    // Update existing panel (just focus state, no header content to update)
-                    panel.className = `term-panel ${isFocused ? 'focused' : ''}`;
-                }
-            });
-
-            // Fill empty grid cells
-            for (let i = visible.length; i < max; i++) {
-                const empty = document.createElement('div');
-                empty.className = 'panel-empty';
-                empty.innerHTML = `<div style="text-align:center;opacity:0.4">
-                    <div style="font-size:1.5rem">+</div>
-                    <div class="hint">Click a session to fill</div>
-                </div>`;
-                container.appendChild(empty);
+            // Alt+S: toggle split
+            if (e.altKey && e.key.toLowerCase() === 's') {
+                e.preventDefault();
+                toggleSplit();
+                return;
             }
-
-            // Attach xterm.js to each visible panel (only if not already attached)
-            visible.forEach(name => {
-                const el = document.getElementById(`term-${name}`);
-                if (!el) return;
-
-                const term = createTerminal(name);
-                if (!term.element || !el.contains(term.element)) {
-                    term.open(el);
-                    setTimeout(() => fitTerminal(name), 50);
-                }
-                connectTerminalWS(name);
-            });
-
-            // Highlight sidebar items
-            document.querySelectorAll('.session-item').forEach(el => {
-                el.classList.toggle('docked', dockedSessions.includes(el.dataset.session));
-            });
-        }
-
-        function updateTabDots() {
-            document.querySelectorAll('.tab .tab-dot').forEach(dot => {
-                const tab = dot.closest('.tab');
-                if (!tab) return;
-                const name = tab.textContent.trim().replace('×', '').trim();
-                const s = sessionsData[name];
-                if (s) { dot.className = `tab-dot ${s.state}`; }
-            });
-        }
-
-        // ── Send command via API ─────────────
-        async function sendCmd(name) {
-            const input = document.getElementById(`input-${name}`);
-            if (!input) return;
-            const text = input.value;
-            if (!text) return;
-            input.value = '';
-            try {
-                await fetch(`/api/session/${name}/send`, {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/x-www-form-urlencoded'},
-                    body: `text=${encodeURIComponent(text)}`
-                });
-            } catch (e) { console.error('Send failed:', e); }
-        }
-
-        // ── Events ─────────────────────────────────
-        function addEvent(ev) {
-            const list = document.getElementById('event-list');
-            const ts = new Date(ev.ts * 1000).toLocaleTimeString();
-            const row = document.createElement('div');
-            row.className = 'ev-row';
-            row.innerHTML = `<span class="ev-ts">${ts}</span><span class="ev-session">${ev.session}</span><span>${ev.old_state||'?'}→${ev.new_state}</span>`;
-            list.prepend(row);
-            while (list.children.length > 30) list.removeChild(list.lastChild);
-        }
-        let eventsCollapsed = false;
-        function toggleEvents() {
-            eventsCollapsed = !eventsCollapsed;
-            document.getElementById('event-list').classList.toggle('collapsed', eventsCollapsed);
-            document.getElementById('ev-toggle').textContent = eventsCollapsed ? '▶' : '▼';
-        }
-
-        // ── Create / Delete session ────────────────
-        async function createSession() {
-            const name = prompt('Session name:');
-            if (!name) return;
-            try {
-                await fetch(`/api/session/${name}`, { method: 'POST' });
-                setTimeout(() => dockSession(name), 2000);
-            } catch (e) { console.error('Create failed:', e); }
-        }
-
-        // ── Utilities ──────────────────────────────
-        function esc(text) {
-            const d = document.createElement('div');
-            d.textContent = text;
-            return d.innerHTML;
-        }
-
-        // Convert epoch timestamps
-        document.querySelectorAll('.ts-epoch').forEach(el => {
-            const ts = parseFloat(el.dataset.ts);
-            if (ts) el.textContent = new Date(ts * 1000).toLocaleTimeString();
+            // Escape: close exposé or settings
+            if (e.key === 'Escape') {
+                if (exposeOpen) { toggleExpose(); return; }
+                const dd = document.getElementById('settings-dropdown');
+                if (dd.classList.contains('open')) { dd.classList.remove('open'); return; }
+                const ctx = document.getElementById('ctx-menu');
+                if (ctx.classList.contains('visible')) { ctx.classList.remove('visible'); return; }
+                cancelCreate();
+            }
         });
 
-        // Global resize handler — fit all visible terminals
+        // ══════════════════════════════════════════
+        // RESIZE HANDLER
+        // ══════════════════════════════════════════
         window.addEventListener('resize', () => {
-            dockedSessions.forEach(name => fitTerminal(name));
+            focusedSessions.forEach(name => fitTerminal(name));
         });
 
-        // Auto-dock first two sessions on load
+        // ══════════════════════════════════════════
+        // INITIALIZATION
+        // ══════════════════════════════════════════
         const initialSessions = {{ sessions | tojson }};
-        initialSessions.slice(0, maxPanels[currentLayout]).forEach(s => {
-            dockedSessions.push(s.name);
-            sessionsData[s.name] = s;
-        });
-        if (dockedSessions.length > 0) activeTab = dockedSessions[0];
-        initSettings();
-        renderPanels();
+        const initialEvents = {{ events | tojson }};
+
+        // Populate state
+        initialSessions.forEach(s => { sessionsData[s.name] = s; });
+        sessionsList = initialSessions.sort((a, b) => a.name.localeCompare(b.name));
+
+        // Restore settings
+        setTheme(settings.theme);
+        splitMode = !!settings.split;
+        if (splitMode) document.getElementById('btn-split').classList.add('active');
+
+        // Restore focused session(s) from localStorage or auto-pick first
+        if (settings.focused && sessionsData[settings.focused]) {
+            focusedSessions = [settings.focused];
+            if (splitMode && settings.focused2 && sessionsData[settings.focused2]) {
+                focusedSessions.push(settings.focused2);
+            }
+        } else if (sessionsList.length > 0) {
+            focusedSessions = [sessionsList[0].name];
+        }
+
+        renderDock();
+        renderFocus();
+
+        if (settings.expose) {
+            // Defer expose open to after first render
+            setTimeout(() => toggleExpose(), 100);
+        }
+
+        // Start SSE
+        if (document.readyState === 'complete') connectSSE();
+        else window.addEventListener('load', connectSSE);
+
+        document.getElementById('settings-count').textContent = sessionsList.length + ' sessions';
+
+    })();
     </script>
 </body>
 </html>

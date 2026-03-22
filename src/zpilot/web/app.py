@@ -294,6 +294,28 @@ def _normalize_for_xterm(text: str) -> str:
     return text
 
 
+# ── Plugin status store (in-memory) ──────────────────────────────────
+_plugin_status: dict = {}
+
+
+@app.post("/api/plugin-status")
+async def api_plugin_status_post(request: Request):
+    """Receive plugin status reports from the Zellij WASM plugin."""
+    global _plugin_status
+    body = await request.json()
+    _plugin_status = {
+        "data": body,
+        "updated_at": time.time(),
+    }
+    return {"status": "ok"}
+
+
+@app.get("/api/plugin-status")
+async def api_plugin_status_get():
+    """Return the latest plugin status report."""
+    return _plugin_status
+
+
 @app.get("/api/stream")
 async def event_stream():
     """SSE endpoint for live event updates with built-in state change detection."""

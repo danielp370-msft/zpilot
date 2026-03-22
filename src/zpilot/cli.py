@@ -449,6 +449,69 @@ def fleet() -> None:
     asyncio.run(_fleet())
 
 
+@main.command("install-zellij-plugin")
+@click.option("--source", default=None, type=click.Path(exists=True),
+              help="Path to zpilot_zellij_plugin.wasm file")
+@click.option("--config", "update_config", is_flag=True, default=False,
+              help="Update Zellij config.kdl to load the plugin")
+def install_zellij_plugin(source: str | None, update_config: bool) -> None:
+    """Install the zpilot Zellij WASM plugin."""
+    import shutil
+    from pathlib import Path
+
+    wasm_name = "zpilot_zellij_plugin.wasm"
+
+    # Resolve source WASM file
+    if source:
+        wasm_src = Path(source)
+    else:
+        # Look in the zpilot package directory first
+        pkg_dir = Path(__file__).parent
+        wasm_src = pkg_dir / wasm_name
+        if not wasm_src.exists():
+            # Fall back to project build directory
+            wasm_src = (
+                pkg_dir.parent.parent
+                / "zpilot-zellij-plugin"
+                / "target"
+                / "wasm32-wasip1"
+                / "release"
+                / wasm_name
+            )
+
+    if not wasm_src.exists():
+        click.echo(f"❌ WASM plugin not found: {wasm_src}", err=True)
+        click.echo("  Build it first or use --source to specify the path.", err=True)
+        sys.exit(1)
+
+    # Copy to Zellij plugin directory
+    plugin_dir = Path.home() / ".config" / "zellij" / "plugins"
+    plugin_dir.mkdir(parents=True, exist_ok=True)
+    dest = plugin_dir / wasm_name
+    shutil.copy2(str(wasm_src), str(dest))
+    click.echo(f"✅ Installed {wasm_name} → {dest}")
+
+    # Optionally update Zellij config.kdl
+    if update_config:
+        config_path = Path.home() / ".config" / "zellij" / "config.kdl"
+        plugin_block = (
+            '\nplugins {\n'
+            f'    zpilot location="file:{dest}"\n'
+            '}\n'
+        )
+        if config_path.exists():
+            content = config_path.read_text()
+            if "zpilot" in content:
+                click.echo("ℹ️  Zellij config already references zpilot plugin")
+            else:
+                config_path.write_text(content + plugin_block)
+                click.echo(f"✅ Updated {config_path}")
+        else:
+            config_path.parent.mkdir(parents=True, exist_ok=True)
+            config_path.write_text(plugin_block)
+            click.echo(f"✅ Created {config_path}")
+
+
 @main.command()
 @click.argument("node_name")
 def ping(node_name: str) -> None:

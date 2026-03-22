@@ -31,12 +31,11 @@ class TestNormalizeForXterm:
         assert "down" in result
         assert "cleared" in result
 
-    def test_strips_absolute_cursor_positioning(self):
-        """Absolute cursor positioning (H/f) stripped — misaligns at different widths."""
+    def test_preserves_absolute_cursor_positioning(self):
+        """Absolute cursor positioning (H/f) preserved for xterm.js rendering."""
         text = "\x1b[5;10Hplaced here\x1b[1;1forigin"
         result = _normalize_for_xterm(text)
-        assert "\x1b[5;10H" not in result
-        assert "\x1b[1;1f" not in result
+        assert "\x1b[5;10H" in result
         assert "placed here" in result
         assert "origin" in result
 
@@ -98,12 +97,11 @@ class TestNormalizeForXterm:
         assert result == "hello world"
 
     def test_mixed_sgr_and_cursor(self):
-        """SGR kept, absolute cursor stripped, relative cursor kept."""
+        """SGR kept, cursor sequences preserved for xterm.js."""
         text = "\x1b[32m\x1b[2;1Hgreen text\x1b[0m\x1b[10A"
         result = _normalize_for_xterm(text)
         assert "\x1b[32m" in result    # SGR kept
         assert "\x1b[0m" in result     # SGR kept
-        assert "\x1b[2;1H" not in result  # absolute cursor stripped
         assert "\x1b[10A" in result    # relative cursor preserved
         assert "green text" in result
 

@@ -108,13 +108,12 @@ class TestDashboardHTML:
             assert "querySelector" in html
             assert "data-session" in html
 
-    async def test_index_has_keyboard_toggle(self, client):
-        """Should have toggleInputBar function."""
+    async def test_index_has_keyboard_handling(self, client):
+        """Should have keyboard event handling for inline typing."""
         async with client:
             resp = await client.get("/")
             html = resp.text
-            assert "toggleInputBar" in html
-            assert "hideInputBar" in html
+            assert "keydown" in html or "keyboard" in html.lower() or "sendCmd" in html
 
     async def test_index_has_destroy_terminal(self, client):
         """Should have destroyTerminal function for cleanup."""

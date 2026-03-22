@@ -310,3 +310,135 @@ class TestSiblingsEndpoint:
             for s in data["siblings"]:
                 assert "name" in s
                 assert "transport" in s
+
+
+# ── TLS / Certificate Tests ─────────────────────────────────────
+
+class TestCertGeneration:
+    def test_generate_self_signed_cert_creates_files(self):
+        """Test that generate_self_signed_cert creates cert and key files."""
+        from zpilot.mcp_http import generate_self_signed_cert
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cert_dir = Path(tmpdir)
+            cert_path, key_path, fingerprint = generate_self_signed_cert(cert_dir)
+
+            assert os.path.exists(cert_path)
+            assert os.path.exists(key_path)
+            assert cert_path.endswith("mcp-cert.pem")
+            assert key_path.endswith("mcp-key.pem")
+
+            # Key file should be owner-only readable
+            key_mode = os.stat(key_path).st_mode & 0o777
+            assert key_mode == 0o600
+
+            # Fingerprint should be a colon-separated hex string
+            assert ":" in fingerprint
+            assert len(fingerprint) > 40  # SHA-256 = 64 hex chars + 31 colons
+
+    def test_generate_cert_reuses_existing(self):
+        """Test that existing certs are reused, not regenerated."""
+        from zpilot.mcp_http import generate_self_signed_cert
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cert_dir = Path(tmpdir)
+            cert1, key1, fp1 = generate_self_signed_cert(cert_dir)
+            cert2, key2, fp2 = generate_self_signed_cert(cert_dir)
+
+            assert cert1 == cert2
+            assert key1 == key2
+            assert fp1 == fp2  # same cert = same fingerprint
+
+    def test_generated_cert_has_san(self):
+        """Verify cert includes SAN with localhost + 127.0.0.1."""
+        from zpilot.mcp_http import generate_self_signed_cert
+        from pathlib import Path
+        from cryptography import x509
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cert_path, _, _ = generate_self_signed_cert(Path(tmpdir))
+            cert = x509.load_pem_x509_certificate(Path(cert_path).read_bytes())
+
+            san = cert.extensions.get_extension_for_class(
+                x509.SubjectAlternativeName
+            ).value
+            dns_names = san.get_values_for_type(x509.DNSName)
+            assert "localhost" in dns_names
+
+            import ipaddress
+            ip_addrs = san.get_values_for_type(x509.IPAddress)
+            assert ipaddress.IPv4Address("127.0.0.1") in ip_addrs
+
+    def test_generated_cert_validity_365_days(self):
+        """Cert should be valid for 365 days."""
+        from zpilot.mcp_http import generate_self_signed_cert
+        from pathlib import Path
+        from cryptography import x509
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cert_path, _, _ = generate_self_signed_cert(Path(tmpdir))
+            cert = x509.load_pem_x509_certificate(Path(cert_path).read_bytes())
+
+            delta = cert.not_valid_after - cert.not_valid_before
+            assert delta.days == 365
+
+
+class TestServeHttpTLS:
+    def test_serve_http_tls_generates_certs(self):
+        """When http_tls=True and no cert provided, certs should be auto-generated."""
+        from zpilot.mcp_http import generate_self_signed_cert
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cert_dir = Path(tmpdir)
+            cert_path, key_path, fp = generate_self_signed_cert(cert_dir)
+
+            # Verify the files exist and are valid PEM
+            cert_bytes = Path(cert_path).read_bytes()
+            key_bytes = Path(key_path).read_bytes()
+            assert b"BEGIN CERTIFICATE" in cert_bytes
+            assert b"BEGIN EC PRIVATE KEY" in key_bytes
+
+
+class TestMCPTransportTLS:
+    def test_verify_ssl_default_false(self):
+        """By default, verify_ssl is False (for self-signed certs)."""
+        t = MCPTransport(url="https://host:8222", token="tok")
+        assert t.verify_ssl is False
+        assert t._verify is False
+
+    def test_verify_ssl_true(self):
+        """When verify_ssl=True, _verify returns True."""
+        t = MCPTransport(url="https://host:8222", verify_ssl=True)
+        assert t._verify is True
+
+    def test_ca_cert_overrides_verify(self):
+        """When ca_cert is set, _verify returns the CA path."""
+        t = MCPTransport(
+            url="https://host:8222", verify_ssl=False, ca_cert="/path/to/ca.pem"
+        )
+        assert t._verify == "/path/to/ca.pem"
+
+    def test_cert_fingerprint_stored(self):
+        """cert_fingerprint should be stored on the transport."""
+        fp = "ab:cd:ef:12:34"
+        t = MCPTransport(url="https://host:8222", cert_fingerprint=fp)
+        assert t.cert_fingerprint == fp
+
+    def test_factory_passes_ssl_opts(self):
+        """create_transport should forward verify_ssl and ca_cert."""
+        t = create_transport(
+            "mcp",
+            host="https://remote:8222",
+            token="secret",
+            verify_ssl=True,
+            ca_cert="/my/ca.pem",
+            cert_fingerprint="aa:bb",
+        )
+        assert isinstance(t, MCPTransport)
+        assert t.verify_ssl is True
+        assert t.ca_cert == "/my/ca.pem"
+        assert t.cert_fingerprint == "aa:bb"
+        assert t._verify == "/my/ca.pem"

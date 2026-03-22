@@ -184,3 +184,7 @@ class ZpilotConfig:
     http_host: str = "127.0.0.1"
     http_port: int = 8222
     http_token: str = ""  # empty = auto-generate on first serve-http
+    # TLS settings for HTTP server
+    http_tls: bool = True  # default ON — always encrypt network traffic
+    http_cert_file: str = ""  # path to cert PEM; auto-generated if empty
+    http_key_file: str = ""  # path to key PEM; auto-generated if empty

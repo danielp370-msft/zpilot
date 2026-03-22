@@ -230,8 +230,8 @@ class MCPTransport(Transport):
     Includes automatic retry with exponential backoff for resilience against
     transient network failures. Configure via max_retries and retry_delay.
 
-    Note: verify=False is used because devtunnels may use self-signed certs
-    or connections may be local. Production deployments should use proper certs.
+    TLS verification can be controlled via verify_ssl and ca_cert parameters.
+    For self-signed certs, set verify_ssl=False or pin the CA with ca_cert.
     """
 
     def __init__(
@@ -241,6 +241,9 @@ class MCPTransport(Transport):
         timeout: float = 30.0,
         max_retries: int = 3,
         retry_delay: float = 2.0,
+        verify_ssl: bool = False,
+        ca_cert: str | None = None,
+        cert_fingerprint: str | None = None,
     ):
         # url should be the base URL like "https://host:8222"
         # Strip trailing /mcp if present
@@ -249,6 +252,16 @@ class MCPTransport(Transport):
         self.default_timeout = timeout
         self.max_retries = max_retries
         self.retry_delay = retry_delay
+        self.verify_ssl = verify_ssl
+        self.ca_cert = ca_cert
+        self.cert_fingerprint = cert_fingerprint
+
+    @property
+    def _verify(self) -> str | bool:
+        """Return the verify parameter for httpx: CA path or bool."""
+        if self.ca_cert:
+            return self.ca_cert
+        return self.verify_ssl
 
     def _headers(self) -> dict[str, str]:
         headers = {"Content-Type": "application/json"}
@@ -261,7 +274,7 @@ class MCPTransport(Transport):
         last_error = ""
         for attempt in range(self.max_retries):
             try:
-                async with httpx.AsyncClient(verify=False) as client:
+                async with httpx.AsyncClient(verify=self._verify) as client:
                     resp = await client.post(
                         f"{self.base_url}/api/exec",
                         json={"command": command, "timeout": timeout},
@@ -291,7 +304,7 @@ class MCPTransport(Transport):
         import httpx
         for attempt in range(self.max_retries):
             try:
-                async with httpx.AsyncClient(verify=False) as client:
+                async with httpx.AsyncClient(verify=self._verify) as client:
                     resp = await client.get(
                         f"{self.base_url}/health",
                         timeout=10.0,
@@ -307,7 +320,7 @@ class MCPTransport(Transport):
         import httpx
         with open(local_path, "rb") as f:
             content = base64.b64encode(f.read()).decode()
-        async with httpx.AsyncClient(verify=False) as client:
+        async with httpx.AsyncClient(verify=self._verify) as client:
             resp = await client.post(
                 f"{self.base_url}/api/upload",
                 json={"path": remote_path, "content": content},
@@ -320,7 +333,7 @@ class MCPTransport(Transport):
     async def download(self, remote_path: str, local_path: str) -> None:
         import base64
         import httpx
-        async with httpx.AsyncClient(verify=False) as client:
+        async with httpx.AsyncClient(verify=self._verify) as client:
             resp = await client.get(
                 f"{self.base_url}/api/download",
                 params={"path": remote_path},
@@ -364,6 +377,9 @@ def create_transport(
             timeout=opts.get("timeout", 30.0),
             max_retries=opts.get("max_retries", 3),
             retry_delay=opts.get("retry_delay", 2.0),
+            verify_ssl=opts.get("verify_ssl", False),
+            ca_cert=opts.get("ca_cert"),
+            cert_fingerprint=opts.get("cert_fingerprint"),
         )
     else:
         raise ValueError(f"Unknown transport: {transport_type}")

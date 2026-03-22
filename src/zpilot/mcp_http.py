@@ -9,16 +9,20 @@ Each node runs its own zpilot HTTP server, exposing:
   - /api/siblings — list known peer nodes (mesh discovery)
 
 All endpoints except /health require Bearer token authentication.
+TLS is enabled by default for all network communication.
 """
 
 from __future__ import annotations
 
 import asyncio
 import base64
+import datetime
+import ipaddress
 import logging
 import os
 import secrets
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
@@ -34,9 +38,73 @@ from .nodes import NodeRegistry, load_nodes
 log = logging.getLogger("zpilot.http")
 
 
+CERT_DIR = Path("~/.config/zpilot/certs").expanduser()
+
+
 def generate_token() -> str:
     """Generate a secure auth token for zpilot HTTP server."""
     return secrets.token_urlsafe(32)
+
+
+def generate_self_signed_cert(
+    cert_dir: Path | None = None,
+) -> tuple[str, str, str]:
+    """Generate a self-signed TLS certificate for the zpilot HTTP server.
+
+    Returns (cert_path, key_path, fingerprint).
+    Reuses existing certs if they already exist.
+    """
+    cert_dir = cert_dir or CERT_DIR
+    cert_file = cert_dir / "mcp-cert.pem"
+    key_file = cert_dir / "mcp-key.pem"
+
+    if cert_file.exists() and key_file.exists():
+        # Load existing cert to get fingerprint
+        from cryptography import x509
+        from cryptography.hazmat.primitives import hashes
+
+        cert = x509.load_pem_x509_certificate(cert_file.read_bytes())
+        fp = cert.fingerprint(hashes.SHA256()).hex(":")
+        return str(cert_file), str(key_file), fp
+
+    cert_dir.mkdir(parents=True, exist_ok=True)
+
+    from cryptography import x509
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import ec
+    from cryptography.x509.oid import NameOID
+
+    key = ec.generate_private_key(ec.SECP256R1())
+    subject = issuer = x509.Name([
+        x509.NameAttribute(NameOID.COMMON_NAME, "zpilot"),
+    ])
+    cert = (
+        x509.CertificateBuilder()
+        .subject_name(subject)
+        .issuer_name(issuer)
+        .public_key(key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(datetime.datetime.utcnow())
+        .not_valid_after(datetime.datetime.utcnow() + datetime.timedelta(days=365))
+        .add_extension(
+            x509.SubjectAlternativeName([
+                x509.DNSName("localhost"),
+                x509.IPAddress(ipaddress.IPv4Address("127.0.0.1")),
+            ]),
+            critical=False,
+        )
+        .sign(key, hashes.SHA256())
+    )
+    key_file.write_bytes(key.private_bytes(
+        serialization.Encoding.PEM,
+        serialization.PrivateFormat.TraditionalOpenSSL,
+        serialization.NoEncryption(),
+    ))
+    key_file.chmod(0o600)
+    cert_file.write_bytes(cert.public_bytes(serialization.Encoding.PEM))
+
+    fp = cert.fingerprint(hashes.SHA256()).hex(":")
+    return str(cert_file), str(key_file), fp
 
 
 class TokenAuthMiddleware(BaseHTTPMiddleware):
@@ -186,7 +254,7 @@ def create_http_app(config: ZpilotConfig | None = None) -> FastAPI:
 
 
 async def serve_http(config: ZpilotConfig | None = None) -> None:
-    """Run the HTTP MCP server."""
+    """Run the HTTP MCP server with optional TLS encryption."""
     import uvicorn
 
     config = config or load_config()
@@ -195,11 +263,41 @@ async def serve_http(config: ZpilotConfig | None = None) -> None:
     host = config.http_host
     port = config.http_port
 
-    log.info("zpilot HTTP server starting on %s:%d", host, port)
+    ssl_kwargs: dict = {}
+    scheme = "http"
+
+    if config.http_tls:
+        scheme = "https"
+        cert_path = config.http_cert_file
+        key_path = config.http_key_file
+
+        if cert_path and key_path:
+            # User-provided certs
+            ssl_kwargs["ssl_certfile"] = cert_path
+            ssl_kwargs["ssl_keyfile"] = key_path
+            log.info("TLS enabled with user-provided cert: %s", cert_path)
+        else:
+            # Auto-generate self-signed certs
+            try:
+                cert_path, key_path, fingerprint = generate_self_signed_cert()
+                ssl_kwargs["ssl_certfile"] = cert_path
+                ssl_kwargs["ssl_keyfile"] = key_path
+                log.info("TLS enabled with auto-generated self-signed cert")
+                log.info("Cert fingerprint (SHA-256): %s", fingerprint)
+            except ImportError:
+                log.warning(
+                    "cryptography package not installed — running without TLS. "
+                    "Install with: pip install cryptography"
+                )
+                scheme = "http"
+
+    log.info("zpilot HTTP server starting on %s://%s:%d", scheme, host, port)
 
     if hasattr(app, "_zpilot_token"):
         log.info("Auth token: %s", app._zpilot_token)  # type: ignore[attr-defined]
 
-    server_config = uvicorn.Config(app, host=host, port=port, log_level="info")
+    server_config = uvicorn.Config(
+        app, host=host, port=port, log_level="info", **ssl_kwargs
+    )
     server = uvicorn.Server(server_config)
     await server.serve()

@@ -82,6 +82,14 @@ def load_config() -> ZpilotConfig:
     cfg.http_port = int(os.environ.get("ZPILOT_HTTP_PORT", str(http.get("port", cfg.http_port))))
     cfg.http_token = os.environ.get("ZPILOT_HTTP_TOKEN", http.get("token", cfg.http_token))
 
+    tls_env = os.environ.get("ZPILOT_HTTP_TLS", "")
+    if tls_env:
+        cfg.http_tls = tls_env.lower() not in ("0", "false", "no", "off")
+    else:
+        cfg.http_tls = http.get("tls", cfg.http_tls)
+    cfg.http_cert_file = os.environ.get("ZPILOT_HTTP_CERT", http.get("cert_file", cfg.http_cert_file))
+    cfg.http_key_file = os.environ.get("ZPILOT_HTTP_KEY", http.get("key_file", cfg.http_key_file))
+
     return cfg
 
 

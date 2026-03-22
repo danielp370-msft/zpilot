@@ -17,6 +17,14 @@ class PaneState(str, Enum):
     UNKNOWN = "unknown"    # not yet categorized
 
 
+class NodeState(str, Enum):
+    """Connectivity state of a node."""
+    ONLINE = "online"
+    OFFLINE = "offline"
+    UNREACHABLE = "unreachable"
+    UNKNOWN = "unknown"
+
+
 @dataclass
 class Pane:
     """A Zellij pane."""
@@ -51,6 +59,7 @@ class Event:
     old_state: str | None = None
     new_state: str = ""
     details: str | None = None
+    node: str = "local"
 
     def to_dict(self) -> dict:
         return {
@@ -61,6 +70,7 @@ class Event:
             "old_state": self.old_state,
             "new_state": self.new_state,
             "details": self.details,
+            "node": self.node,
         }
 
     @classmethod
@@ -73,7 +83,72 @@ class Event:
             old_state=d.get("old_state"),
             new_state=d.get("new_state"),
             details=d.get("details"),
+            node=d.get("node", "local"),
         )
+
+
+@dataclass
+class SessionHealth:
+    """Health snapshot of a single session on a node."""
+    node: str
+    session: str
+    state: PaneState
+    idle_seconds: float = 0.0
+    last_line: str = ""
+    error: str | None = None
+
+
+@dataclass
+class NodeHealth:
+    """Health snapshot of a node."""
+    name: str
+    state: NodeState = NodeState.UNKNOWN
+    sessions: list[SessionHealth] = field(default_factory=list)
+    last_ping: float = 0.0
+    error: str | None = None
+
+    @property
+    def busy_count(self) -> int:
+        return sum(1 for s in self.sessions if s.state == PaneState.ACTIVE)
+
+    @property
+    def idle_count(self) -> int:
+        return sum(1 for s in self.sessions if s.state in (PaneState.IDLE, PaneState.WAITING))
+
+    @property
+    def total_sessions(self) -> int:
+        return len(self.sessions)
+
+
+@dataclass
+class FleetStatus:
+    """Aggregated health across all nodes."""
+    nodes: list[NodeHealth] = field(default_factory=list)
+    timestamp: float = field(default_factory=time.time)
+
+    @property
+    def online_count(self) -> int:
+        return sum(1 for n in self.nodes if n.state == NodeState.ONLINE)
+
+    @property
+    def total_nodes(self) -> int:
+        return len(self.nodes)
+
+    @property
+    def total_sessions(self) -> int:
+        return sum(n.total_sessions for n in self.nodes)
+
+    @property
+    def total_busy(self) -> int:
+        return sum(n.busy_count for n in self.nodes)
+
+    def summary(self) -> str:
+        parts = [
+            f"{self.online_count}/{self.total_nodes} nodes online",
+            f"{self.total_sessions} sessions",
+            f"{self.total_busy} busy",
+        ]
+        return " │ ".join(parts)
 
 
 @dataclass
@@ -104,3 +179,7 @@ class ZpilotConfig:
     ])
     ntfy_topic: str = "zpilot"
     ntfy_server: str = "https://ntfy.sh"
+    # HTTP MCP server settings (for distributed zpilot)
+    http_host: str = "127.0.0.1"
+    http_port: int = 8222
+    http_token: str = ""  # empty = auto-generate on first serve-http

@@ -252,5 +252,98 @@ def config() -> None:
         click.echo(f"  {field_name}: {getattr(cfg, field_name)}")
 
 
+@main.command()
+def nodes() -> None:
+    """List configured nodes."""
+    from .nodes import load_nodes
+    node_list = load_nodes()
+    click.echo(f"Nodes ({len(node_list)}):")
+    for n in node_list:
+        host = n.host or "(local)"
+        click.echo(f"  {n.name}  [{n.transport_type}]  {host}")
+
+
+@main.command("serve-http")
+@click.option("--host", default=None, help="Bind address (default: from config)")
+@click.option("--port", type=int, default=None, help="Port number (default: from config)")
+@click.option("--token", default=None, help="Auth token (overrides config)")
+def serve_http_cmd(host: str | None, port: int | None, token: str | None) -> None:
+    """Start the MCP server (HTTP transport for distributed zpilot)."""
+    logging.basicConfig(level=logging.INFO, stream=sys.stderr)
+    config = load_config()
+    if host is not None:
+        config.http_host = host
+    if port is not None:
+        config.http_port = port
+    if token is not None:
+        config.http_token = token
+
+    from .mcp_http import serve_http
+    asyncio.run(serve_http(config))
+
+
+@main.command("token-gen")
+def token_gen() -> None:
+    """Generate a secure auth token for zpilot HTTP server."""
+    import secrets
+    token = secrets.token_urlsafe(32)
+    click.echo(token)
+
+
+@main.command()
+def fleet() -> None:
+    """One-shot fleet health check across all nodes."""
+    logging.basicConfig(level=logging.WARNING, stream=sys.stderr)
+
+    async def _fleet() -> None:
+        from .nodes import NodeRegistry, load_nodes
+        from .monitor import Monitor
+        from .events import EventBus
+
+        cfg = load_config()
+        reg = NodeRegistry(load_nodes())
+        bus = EventBus(cfg.events_file)
+        mon = Monitor(reg, cfg, bus)
+        status = await mon.poll_all()
+
+        click.echo(status.summary())
+        for nh in status.nodes:
+            icon = "●" if nh.state.value == "online" else "○"
+            line = f"  {icon} {nh.name}: {nh.state.value}"
+            if nh.error:
+                line += f" ({nh.error})"
+            if nh.sessions:
+                line += f" — {nh.total_sessions} sessions ({nh.busy_count} busy)"
+            click.echo(line)
+
+        stuck = mon.stuck_sessions()
+        if stuck:
+            click.echo(f"\n⚠ {len(stuck)} stuck session(s):")
+            for s in stuck:
+                click.echo(f"  {s.node}:{s.session} idle {s.idle_seconds:.0f}s")
+
+    asyncio.run(_fleet())
+
+
+@main.command()
+@click.argument("node_name")
+def ping(node_name: str) -> None:
+    """Ping a specific node to check connectivity."""
+    logging.basicConfig(level=logging.WARNING, stream=sys.stderr)
+
+    async def _ping() -> None:
+        from .nodes import NodeRegistry, load_nodes
+        reg = NodeRegistry(load_nodes())
+        node = reg.get(node_name)
+        try:
+            alive = await node.transport.is_alive()
+            icon = "✓" if alive else "✗"
+            click.echo(f"{icon} {node.name}: {'reachable' if alive else 'unreachable'}")
+        except Exception as e:
+            click.echo(f"✗ {node.name}: {e}")
+
+    asyncio.run(_ping())
+
+
 if __name__ == "__main__":
     main()

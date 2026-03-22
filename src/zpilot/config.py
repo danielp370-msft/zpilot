@@ -77,6 +77,11 @@ def load_config() -> ZpilotConfig:
     cfg.ntfy_topic = ntfy.get("topic", cfg.ntfy_topic)
     cfg.ntfy_server = ntfy.get("server", cfg.ntfy_server)
 
+    http = data.get("http", {})
+    cfg.http_host = os.environ.get("ZPILOT_HTTP_HOST", http.get("host", cfg.http_host))
+    cfg.http_port = int(os.environ.get("ZPILOT_HTTP_PORT", str(http.get("port", cfg.http_port))))
+    cfg.http_token = os.environ.get("ZPILOT_HTTP_TOKEN", http.get("token", cfg.http_token))
+
     return cfg
 
 

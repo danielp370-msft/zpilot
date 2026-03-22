@@ -196,10 +196,11 @@ async def new_pane(
         session_part = session or "default"
         log_file = str(LOG_DIR / f"{session_part}--{name}.log")
         # Wrap command with `script -f` for real-time output logging
+        import shlex
         if command:
-            actual_command = f"script -f -q {log_file} -c '{command}'"
+            actual_command = f"script -f -q {shlex.quote(log_file)} -c {shlex.quote(command)}"
         else:
-            actual_command = f"script -f -q {log_file}"
+            actual_command = f"script -f -q {shlex.quote(log_file)}"
 
     args = ["new-pane"]
     if name:

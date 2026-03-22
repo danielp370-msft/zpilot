@@ -73,10 +73,11 @@ class TestDaemonCommand:
 
     def test_daemon_with_options(self, runner):
         with patch("zpilot.cli.load_config") as mock_lc, \
+             patch("zpilot.daemon.is_daemon_running", return_value=None), \
              patch("zpilot.daemon.run_daemon", new_callable=AsyncMock) as mock_rd:
             mock_lc.return_value = ZpilotConfig()
             result = runner.invoke(main, [
-                "daemon", "--poll-interval", "1.5", "--idle-threshold", "20"
+                "daemon", "start", "--poll-interval", "1.5", "--idle-threshold", "20"
             ])
             assert result.exit_code == 0
             mock_rd.assert_awaited_once()

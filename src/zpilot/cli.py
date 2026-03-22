@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import sys
 
 import click
@@ -28,11 +29,28 @@ def serve() -> None:
     asyncio.run(mcp_serve())
 
 
-@main.command()
+@main.group(invoke_without_command=True)
+@click.pass_context
+def daemon(ctx: click.Context) -> None:
+    """Manage the zpilot background daemon."""
+    if ctx.invoked_subcommand is None:
+        # Default: start the daemon in foreground (backward compatible)
+        ctx.invoke(daemon_start, foreground=True)
+
+
+@daemon.command("start")
 @click.option("--poll-interval", type=float, default=None, help="Seconds between polls")
 @click.option("--idle-threshold", type=float, default=None, help="Seconds to consider idle")
-def daemon(poll_interval: float | None, idle_threshold: float | None) -> None:
-    """Start the background session watcher daemon."""
+@click.option("--foreground", "-f", is_flag=True, default=False, help="Run in foreground (default when called directly)")
+def daemon_start(poll_interval: float | None = None, idle_threshold: float | None = None, foreground: bool = False) -> None:
+    """Start the daemon (foreground by default, or via systemd)."""
+    from .daemon import is_daemon_running
+
+    existing = is_daemon_running()
+    if existing:
+        click.echo(f"⚠️  Daemon already running (PID {existing})")
+        return
+
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(name)s %(levelname)s %(message)s",
@@ -46,6 +64,89 @@ def daemon(poll_interval: float | None, idle_threshold: float | None) -> None:
 
     from .daemon import run_daemon
     asyncio.run(run_daemon(config))
+
+
+@daemon.command("stop")
+def daemon_stop() -> None:
+    """Stop the running daemon."""
+    import signal as sig
+    from .daemon import is_daemon_running, read_pid_file
+
+    pid = is_daemon_running()
+    if pid is None:
+        click.echo("No daemon running.")
+        return
+
+    try:
+        os.kill(pid, sig.SIGTERM)
+        click.echo(f"✅ Sent SIGTERM to daemon (PID {pid})")
+    except ProcessLookupError:
+        click.echo("Daemon process not found (stale PID file).")
+    except PermissionError:
+        click.echo(f"❌ Permission denied to stop PID {pid}")
+
+
+@daemon.command("status")
+def daemon_status() -> None:
+    """Check if the daemon is running."""
+    from .daemon import is_daemon_running
+
+    pid = is_daemon_running()
+    if pid:
+        click.echo(f"✅ Daemon running (PID {pid})")
+    else:
+        click.echo("⏹  Daemon not running")
+
+
+@daemon.command("install")
+def daemon_install() -> None:
+    """Install systemd user unit for auto-start."""
+    from .daemon import install_systemd_unit
+
+    path = install_systemd_unit()
+    click.echo(f"✅ Installed {path}")
+    click.echo("Run: systemctl --user daemon-reload")
+    click.echo("Run: zpilot daemon enable")
+
+
+@daemon.command("uninstall")
+def daemon_uninstall() -> None:
+    """Remove systemd user unit."""
+    from .daemon import uninstall_systemd_unit
+
+    if uninstall_systemd_unit():
+        click.echo("✅ Removed zpilot.service")
+        click.echo("Run: systemctl --user daemon-reload")
+    else:
+        click.echo("No unit file found.")
+
+
+@daemon.command("enable")
+def daemon_enable() -> None:
+    """Enable daemon auto-start via systemd."""
+    import subprocess
+    result = subprocess.run(
+        ["systemctl", "--user", "enable", "zpilot.service"],
+        capture_output=True, text=True,
+    )
+    if result.returncode == 0:
+        click.echo("✅ zpilot daemon enabled (starts on login)")
+    else:
+        click.echo(f"❌ {result.stderr.strip()}")
+
+
+@daemon.command("disable")
+def daemon_disable() -> None:
+    """Disable daemon auto-start via systemd."""
+    import subprocess
+    result = subprocess.run(
+        ["systemctl", "--user", "disable", "zpilot.service"],
+        capture_output=True, text=True,
+    )
+    if result.returncode == 0:
+        click.echo("✅ zpilot daemon disabled")
+    else:
+        click.echo(f"❌ {result.stderr.strip()}")
 
 
 @main.command()

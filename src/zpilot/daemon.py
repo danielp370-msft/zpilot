@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import signal
 import time
+from pathlib import Path
 
 from . import zellij
 from .config import load_config
@@ -15,6 +17,99 @@ from .models import Event, PaneState, ZpilotConfig
 from .notifications import NotificationAdapter, create_adapter
 
 log = logging.getLogger("zpilot.daemon")
+
+# PID file location
+PID_DIR = Path("/tmp/zpilot")
+PID_FILE = PID_DIR / "zpilot.pid"
+
+
+def write_pid_file() -> None:
+    """Write current process PID to the PID file."""
+    PID_DIR.mkdir(parents=True, exist_ok=True)
+    PID_FILE.write_text(str(os.getpid()))
+
+
+def read_pid_file() -> int | None:
+    """Read PID from the PID file. Returns None if not found."""
+    try:
+        return int(PID_FILE.read_text().strip())
+    except (FileNotFoundError, ValueError):
+        return None
+
+
+def remove_pid_file() -> None:
+    """Remove the PID file if it exists."""
+    try:
+        PID_FILE.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
+def is_daemon_running() -> int | None:
+    """Check if a daemon is running. Returns PID if alive, None otherwise.
+
+    Also cleans up stale PID files (process no longer exists).
+    """
+    pid = read_pid_file()
+    if pid is None:
+        return None
+    try:
+        os.kill(pid, 0)  # Signal 0 = check if process exists
+        return pid
+    except (ProcessLookupError, PermissionError):
+        # Stale PID file — process is gone
+        remove_pid_file()
+        return None
+
+
+def generate_systemd_unit(python_path: str | None = None) -> str:
+    """Generate a systemd user unit file for zpilot daemon."""
+    import shutil
+    import sys
+
+    if python_path is None:
+        python_path = shutil.which("zpilot") or sys.executable
+
+    # If zpilot CLI is on PATH, use it directly; otherwise use python -m
+    zpilot_bin = shutil.which("zpilot")
+    if zpilot_bin:
+        exec_start = f"{zpilot_bin} daemon"
+    else:
+        exec_start = f"{python_path} -m zpilot.cli daemon"
+
+    return f"""\
+[Unit]
+Description=zpilot terminal orchestration daemon
+After=network.target
+
+[Service]
+Type=simple
+ExecStart={exec_start}
+Restart=on-failure
+RestartSec=5
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=default.target
+"""
+
+
+def install_systemd_unit() -> Path:
+    """Install the systemd user unit file. Returns the path."""
+    unit_dir = Path.home() / ".config" / "systemd" / "user"
+    unit_dir.mkdir(parents=True, exist_ok=True)
+    unit_path = unit_dir / "zpilot.service"
+    unit_path.write_text(generate_systemd_unit())
+    return unit_path
+
+
+def uninstall_systemd_unit() -> bool:
+    """Remove the systemd user unit file. Returns True if removed."""
+    unit_path = Path.home() / ".config" / "systemd" / "user" / "zpilot.service"
+    if unit_path.exists():
+        unit_path.unlink()
+        return True
+    return False
 
 
 class Daemon:
@@ -99,9 +194,16 @@ class Daemon:
 
     async def run(self) -> None:
         """Main daemon loop."""
+        # Check for already-running daemon
+        existing_pid = is_daemon_running()
+        if existing_pid and existing_pid != os.getpid():
+            log.error(f"Daemon already running (PID {existing_pid})")
+            return
+
+        write_pid_file()
         self._running = True
         log.info(
-            f"zpilot daemon started (poll={self.config.poll_interval}s, "
+            f"zpilot daemon started (pid={os.getpid()}, poll={self.config.poll_interval}s, "
             f"idle_threshold={self.config.idle_threshold}s)"
         )
 
@@ -111,9 +213,12 @@ class Daemon:
             details="zpilot daemon started",
         ))
 
-        while self._running:
-            await self.poll_once()
-            await asyncio.sleep(self.config.poll_interval)
+        try:
+            while self._running:
+                await self.poll_once()
+                await asyncio.sleep(self.config.poll_interval)
+        finally:
+            remove_pid_file()
 
     def stop(self) -> None:
         """Stop the daemon loop."""

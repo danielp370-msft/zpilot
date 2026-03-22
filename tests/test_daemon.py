@@ -4,6 +4,7 @@ Tests Daemon class: initialization, poll_once, state change detection,
 notifications, and run/stop lifecycle.
 """
 
+import os
 import sys
 
 sys.path.insert(0, "src")
@@ -268,3 +269,187 @@ class TestRunDaemon:
                 pass  # Signal handler registration may fail in test context
 
             MockDaemon.assert_called_once_with(config)
+
+
+# ── PID file management ─────────────────────────────────────────────
+
+class TestPidFile:
+    def test_write_and_read_pid(self, tmp_path):
+        from zpilot.daemon import write_pid_file, read_pid_file, PID_FILE
+        import zpilot.daemon as dm
+        # Redirect PID_DIR to tmp_path
+        orig_dir = dm.PID_DIR
+        orig_file = dm.PID_FILE
+        try:
+            dm.PID_DIR = tmp_path
+            dm.PID_FILE = tmp_path / "zpilot.pid"
+            write_pid_file()
+            pid = read_pid_file()
+            assert pid == os.getpid()
+        finally:
+            dm.PID_DIR = orig_dir
+            dm.PID_FILE = orig_file
+
+    def test_read_missing_pid_file(self, tmp_path):
+        import zpilot.daemon as dm
+        orig_file = dm.PID_FILE
+        try:
+            dm.PID_FILE = tmp_path / "nonexistent.pid"
+            assert dm.read_pid_file() is None
+        finally:
+            dm.PID_FILE = orig_file
+
+    def test_remove_pid_file(self, tmp_path):
+        import zpilot.daemon as dm
+        orig_file = dm.PID_FILE
+        try:
+            dm.PID_FILE = tmp_path / "zpilot.pid"
+            dm.PID_FILE.write_text("12345")
+            assert dm.PID_FILE.exists()
+            dm.remove_pid_file()
+            assert not dm.PID_FILE.exists()
+        finally:
+            dm.PID_FILE = orig_file
+
+    def test_remove_missing_pid_file(self, tmp_path):
+        import zpilot.daemon as dm
+        orig_file = dm.PID_FILE
+        try:
+            dm.PID_FILE = tmp_path / "nonexistent.pid"
+            dm.remove_pid_file()  # Should not raise
+        finally:
+            dm.PID_FILE = orig_file
+
+    def test_is_daemon_running_returns_pid(self, tmp_path):
+        """Test that is_daemon_running returns current PID."""
+        import zpilot.daemon as dm
+        orig_dir = dm.PID_DIR
+        orig_file = dm.PID_FILE
+        try:
+            dm.PID_DIR = tmp_path
+            dm.PID_FILE = tmp_path / "zpilot.pid"
+            dm.PID_FILE.write_text(str(os.getpid()))
+            assert dm.is_daemon_running() == os.getpid()
+        finally:
+            dm.PID_DIR = orig_dir
+            dm.PID_FILE = orig_file
+
+    def test_is_daemon_running_cleans_stale(self, tmp_path):
+        """Stale PID file (process gone) gets cleaned up."""
+        import zpilot.daemon as dm
+        orig_dir = dm.PID_DIR
+        orig_file = dm.PID_FILE
+        try:
+            dm.PID_DIR = tmp_path
+            dm.PID_FILE = tmp_path / "zpilot.pid"
+            dm.PID_FILE.write_text("99999999")  # Very unlikely to exist
+            result = dm.is_daemon_running()
+            assert result is None
+            assert not dm.PID_FILE.exists()  # Stale file cleaned
+        finally:
+            dm.PID_DIR = orig_dir
+            dm.PID_FILE = orig_file
+
+    def test_is_daemon_running_no_file(self, tmp_path):
+        import zpilot.daemon as dm
+        orig_file = dm.PID_FILE
+        try:
+            dm.PID_FILE = tmp_path / "nope.pid"
+            assert dm.is_daemon_running() is None
+        finally:
+            dm.PID_FILE = orig_file
+
+
+# ── Systemd unit generation ─────────────────────────────────────────
+
+class TestSystemdUnit:
+    def test_generate_unit_contains_required_sections(self):
+        from zpilot.daemon import generate_systemd_unit
+        unit = generate_systemd_unit(python_path="/usr/bin/python3")
+        assert "[Unit]" in unit
+        assert "[Service]" in unit
+        assert "[Install]" in unit
+        assert "Restart=on-failure" in unit
+        assert "WantedBy=default.target" in unit
+
+    def test_install_unit(self, tmp_path):
+        from zpilot.daemon import generate_systemd_unit
+        unit_dir = tmp_path / ".config" / "systemd" / "user"
+        unit_dir.mkdir(parents=True)
+        unit_path = unit_dir / "zpilot.service"
+        unit_path.write_text(generate_systemd_unit())
+        assert unit_path.exists()
+        content = unit_path.read_text()
+        assert "zpilot" in content
+
+    def test_uninstall_unit(self, tmp_path):
+        from zpilot.daemon import uninstall_systemd_unit
+        import zpilot.daemon as dm
+        # Create a fake unit file to test uninstall
+        unit_dir = tmp_path / ".config" / "systemd" / "user"
+        unit_dir.mkdir(parents=True)
+        unit_path = unit_dir / "zpilot.service"
+        unit_path.write_text("[Unit]\nDescription=test\n")
+
+        with patch("zpilot.daemon.Path.home", return_value=tmp_path):
+            assert dm.uninstall_systemd_unit() is True
+            assert not unit_path.exists()
+
+    def test_uninstall_missing_unit(self, tmp_path):
+        import zpilot.daemon as dm
+        with patch("zpilot.daemon.Path.home", return_value=tmp_path):
+            assert dm.uninstall_systemd_unit() is False
+
+
+# ── Daemon run writes PID file ──────────────────────────────────────
+
+class TestDaemonRunPidFile:
+    @pytest.mark.asyncio
+    async def test_run_writes_pid_and_cleans_on_stop(self, config, tmp_path):
+        import zpilot.daemon as dm
+        orig_dir = dm.PID_DIR
+        orig_file = dm.PID_FILE
+        try:
+            dm.PID_DIR = tmp_path
+            dm.PID_FILE = tmp_path / "zpilot.pid"
+
+            with patch("zpilot.daemon.create_adapter") as mock_ca, \
+                 patch("zpilot.daemon.zellij") as mock_z:
+                mock_ca.return_value = MagicMock()
+                mock_z.list_sessions = AsyncMock(return_value=[])
+
+                d = dm.Daemon(config)
+
+                async def stop_soon():
+                    await asyncio.sleep(0.15)
+                    d.stop()
+
+                task = asyncio.create_task(stop_soon())
+                await d.run()
+                await task
+
+                # PID file should be cleaned up after run exits
+                assert not dm.PID_FILE.exists()
+        finally:
+            dm.PID_DIR = orig_dir
+            dm.PID_FILE = orig_file
+
+    @pytest.mark.asyncio
+    async def test_run_refuses_if_already_running(self, config, tmp_path):
+        import zpilot.daemon as dm
+        orig_dir = dm.PID_DIR
+        orig_file = dm.PID_FILE
+        try:
+            dm.PID_DIR = tmp_path
+            dm.PID_FILE = tmp_path / "zpilot.pid"
+            # Write our own PID + 1 won't work (may not exist).
+            # Instead, mock is_daemon_running to return a fake PID.
+            with patch("zpilot.daemon.create_adapter") as mock_ca, \
+                 patch("zpilot.daemon.is_daemon_running", return_value=99999):
+                mock_ca.return_value = MagicMock()
+                d = dm.Daemon(config)
+                await d.run()  # Should return immediately
+                assert d._running is False
+        finally:
+            dm.PID_DIR = orig_dir
+            dm.PID_FILE = orig_file

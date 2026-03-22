@@ -196,11 +196,12 @@ async def proxy_to_node(node_name: str, tool_name: str, arguments: dict) -> dict
         return {"error": str(e)}
 
     if node.is_local:
-        # Execute locally by invoking the tool through our own exec
+        # Execute locally — use proper JSON serialization, never shell interpolation
         import json
-        args_json = json.dumps(arguments)
+        import shlex
+        payload = json.dumps({"tool": tool_name, "arguments": arguments})
         result = await node.transport.exec(
-            f'echo {{"tool": "{tool_name}", "arguments": {args_json}}} | cat',
+            f'echo {shlex.quote(payload)} | cat',
             timeout=30.0,
         )
         return {

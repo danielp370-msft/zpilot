@@ -717,18 +717,23 @@
         let attentionSet = new Set();   // names needing attention (sort left)
         let ctxTarget = null;           // right-click target session name
 
-        // Terminal state
-        let terminals = {};
-        let termSockets = {};
-        let termFitAddons = {};
-        let termLastSize = {};
+        // Terminal state (exposed on window for debugging)
+        window.terminals = {};
+        let terminals = window.terminals;
+        window.termSockets = {};
+        let termSockets = window.termSockets;
+        window.termFitAddons = {};
+        let termFitAddons = window.termFitAddons;
+        window.termLastSize = {};
+        let termLastSize = window.termLastSize;
         const wsRetryDelay = {};
 
         // ══════════════════════════════════════════
         // SETTINGS (localStorage)
         // ══════════════════════════════════════════
         const STORAGE_KEY = 'zpilot_v2';
-        let settings = { theme: 'dark', focused: null, focused2: null, split: false, expose: false, termMode: 'fit', scaleSize: 'auto' };
+        window.settings = { theme: 'dark', focused: null, focused2: null, split: false, expose: false, termMode: 'fit', scaleSize: 'auto' };
+        let settings = window.settings;
         try {
             const s = JSON.parse(localStorage.getItem(STORAGE_KEY));
             if (s) Object.assign(settings, s);
@@ -1196,7 +1201,16 @@
             const ws = new WebSocket(`${proto}//${location.host}/ws/terminal/${name}`);
             termSockets[name] = ws;
 
-            ws.onopen = () => { wsRetryDelay[name] = 1000; };
+            ws.onopen = () => {
+                wsRetryDelay[name] = 1000;
+                // Send current terminal size now that WS is open
+                const term = terminals[name];
+                if (term) {
+                    const cols = term.cols, rows = term.rows;
+                    ws.send(JSON.stringify({ type: 'resize', cols, rows }));
+                    termLastSize[name] = { cols, rows };
+                }
+            };
 
             ws.onmessage = (e) => {
                 const term = terminals[name];
@@ -1204,9 +1218,7 @@
                 try {
                     const msg = JSON.parse(e.data);
                     if (msg.type === 'output') {
-                        term.write('\x1b[2J\x1b[H');
-                        term.clear();
-                        term.write(msg.data);
+                        term.write('\x1b[H' + msg.data);
                     } else if (msg.type === 'append') {
                         term.write(msg.data);
                     }

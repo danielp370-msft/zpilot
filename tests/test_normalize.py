@@ -75,6 +75,15 @@ class TestNormalizeForXterm:
         # Should not have more than 2 consecutive CRLFs
         assert "\r\n\r\n\r\n" not in result
 
+    def test_bracketed_paste_mode_no_blank_lines(self):
+        """Bracketed paste mode sequences on own lines should not leave blanks."""
+        # Simulates bash output where \x1b[?2004l and \x1b[?2004h each
+        # occupy their own line in the log file, followed by OSC title
+        text = "prompt$ \n\x1b[?2004l\n\x1b[?2004h\x1b]0;title\x07prompt$ \n"
+        result = _normalize_for_xterm(text)
+        # Should NOT have blank lines between prompts
+        assert "prompt$ \r\nprompt$ " in result
+
     def test_full_screen_app_last_frame(self):
         """Full-screen apps (clear screen) should show last frame only."""
         text = "frame1 old\x1b[2Jframe2 current"

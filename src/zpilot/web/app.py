@@ -273,7 +273,11 @@ def _normalize_for_xterm(text: str) -> str:
     # Strip charset switches and keypad mode
     text = _re.sub(r'\x1b[()][0-9A-B]', '', text)
     text = _re.sub(r'\x1b[=>]', '', text)
-    # Strip ?-prefixed mode set/reset sequences
+    # Strip lines consisting entirely of ?-prefixed mode sequences (e.g.
+    # bracketed paste toggles \x1b[?2004l/h) BEFORE generic stripping, so
+    # they don't leave behind empty lines
+    text = _re.sub(r'\n(?:\x1b\[\?[0-9;]*[a-zA-Z])+\s*(?=\n|$)', '', text)
+    # Strip remaining inline ?-prefixed mode set/reset sequences
     text = _re.sub(r'\x1b\[\?[0-9;]*[a-zA-Z]', '', text)
     # Strip scroll region
     text = _re.sub(r'\x1b\[[0-9;]*r', '', text)
@@ -285,7 +289,7 @@ def _normalize_for_xterm(text: str) -> str:
     # Normalize \r\n to \n for consistent handling, but preserve bare \r
     # (xterm.js uses \r correctly as carriage return to column 0)
     text = text.replace('\r\n', '\n')
-    # Collapse excessive blank lines
+    # Collapse excessive blank lines (3+ newlines → 2, preserving single blank lines)
     text = _re.sub(r'\n{3,}', '\n\n', text)
     # Strip trailing blank lines before final prompt
     text = _re.sub(r'\n{2,}$', '\n', text)

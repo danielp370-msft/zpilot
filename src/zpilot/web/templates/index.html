@@ -758,15 +758,14 @@
 
             if (focusedSessions.length === 0) {
                 header.style.display = 'none';
-                panels.innerHTML = '';
-                panels.appendChild(empty);
-                empty.style.display = '';
+                panels.querySelectorAll('.term-container').forEach(el => el.remove());
+                if (empty) empty.style.display = '';
                 panels.classList.remove('split');
                 topSession.textContent = 'No session';
                 return;
             }
 
-            if (empty.parentNode === panels) panels.removeChild(empty);
+            if (empty) empty.style.display = 'none';
             header.style.display = '';
 
             const primary = focusedSessions[0];

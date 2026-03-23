@@ -139,6 +139,7 @@ async def ws_terminal(websocket: WebSocket, session_name: str):
     await websocket.accept()
     last_hash = ""
     last_full_content = ""
+    is_focused = True  # assume focused on connect
 
     try:
         # Send initial content
@@ -152,9 +153,9 @@ async def ws_terminal(websocket: WebSocket, session_name: str):
 
         async def send_updates():
             """Poll for terminal changes and push to client."""
-            nonlocal last_hash, last_full_content
+            nonlocal last_hash, last_full_content, is_focused
             while True:
-                await asyncio.sleep(0.3)  # 300ms polling
+                await asyncio.sleep(0.1 if is_focused else 1.0)
                 try:
                     content = await zellij.dump_pane(
                         session=session_name, pane_name="main", tail_lines=200
@@ -184,8 +185,14 @@ async def ws_terminal(websocket: WebSocket, session_name: str):
                         # Update detector with fresh content
                         clean = _strip_ansi(content)
                         detector.detect(session_name, "main", clean)
-                except Exception:
+                except (WebSocketDisconnect, RuntimeError):
                     break
+                except Exception as exc:
+                    import logging
+                    logging.getLogger("zpilot.web").warning(
+                        "send_updates error for %s: %s", session_name, exc
+                    )
+                    await asyncio.sleep(1)  # back off on errors
 
         # Run output streaming in background
         output_task = asyncio.create_task(send_updates())
@@ -202,6 +209,8 @@ async def ws_terminal(websocket: WebSocket, session_name: str):
                         cols = data.get("cols", 80)
                         rows = data.get("rows", 24)
                         await zellij.resize_pane(cols, rows, session=session_name)
+                    elif data.get("type") == "focus":
+                        is_focused = data.get("visible", True)
                     elif data.get("type") == "refresh":
                         # Force full content resend on next poll
                         last_hash = ""

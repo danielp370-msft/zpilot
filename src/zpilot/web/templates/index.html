@@ -938,6 +938,14 @@
                 }
             });
 
+            // Notify visible sessions of focus state
+            visible.forEach(name => {
+                const ws = termSockets[name];
+                if (ws && ws.readyState === 1) {
+                    ws.send(JSON.stringify({ type: 'focus', visible: true }));
+                }
+            });
+
             saveSettings();
         }
 

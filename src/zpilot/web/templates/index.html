@@ -92,6 +92,7 @@
            LAYOUT: topbar → focus area → dock
            ═══════════════════════════════════════════ */
         body {
+            position: fixed; inset: 0;
             display: flex; flex-direction: column;
         }
 
@@ -201,6 +202,14 @@
             background: var(--scanline); pointer-events: none; z-index: 1;
         }
         .term-body .xterm { height: 100%; }
+        .term-body.scale-mode {
+            display: flex; align-items: center; justify-content: center;
+            overflow: hidden;
+        }
+        .term-body.scale-mode .xterm {
+            height: auto !important; width: auto !important;
+            transform-origin: center center;
+        }
 
         .focus-empty {
             flex: 1; display: flex; align-items: center; justify-content: center;
@@ -668,6 +677,13 @@
             </div>
         </div>
         <div class="settings-section" style="margin-bottom:0">
+            <div class="settings-label">Display</div>
+            <div class="theme-grid" style="grid-template-columns: 1fr 1fr;">
+                <button class="theme-btn term-mode-btn" data-m="fit" onclick="setTermMode('fit')">Fit</button>
+                <button class="theme-btn term-mode-btn" data-m="scale" onclick="setTermMode('scale')">Scale</button>
+            </div>
+        </div>
+        <div class="settings-section" style="margin-bottom:0; margin-top:10px">
             <div class="settings-label">Sessions</div>
             <div style="font-size:12px;color:var(--text-dim)" id="settings-count">0 sessions</div>
         </div>
@@ -702,7 +718,7 @@
         // SETTINGS (localStorage)
         // ══════════════════════════════════════════
         const STORAGE_KEY = 'zpilot_v2';
-        let settings = { theme: 'dark', focused: null, focused2: null, split: false, expose: false };
+        let settings = { theme: 'dark', focused: null, focused2: null, split: false, expose: false, termMode: 'fit' };
         try {
             const s = JSON.parse(localStorage.getItem(STORAGE_KEY));
             if (s) Object.assign(settings, s);
@@ -1082,6 +1098,7 @@
         window.ctxClose = ctxClose;
         window.dockScrollLeft = dockScrollLeft;
         window.dockScrollRight = dockScrollRight;
+        window.setTermMode = setTermMode;
 
         // Update dock fades/arrows on scroll
         document.getElementById('dock').addEventListener('scroll', updateDockScrollState);
@@ -1209,7 +1226,54 @@
 
         function fitTerminal(name) {
             const fa = termFitAddons[name];
-            if (fa) { try { fa.fit(); } catch(e) {} }
+            const term = terminals[name];
+            if (!fa || !term || !term.element) return;
+            const body = term.element.closest('.term-body');
+            if (!body) return;
+
+            if (settings.termMode === 'scale') {
+                // Scale mode: fixed 80x24, CSS-scaled to fill container
+                body.classList.add('scale-mode');
+                const xtermEl = body.querySelector('.xterm');
+                if (!xtermEl) return;
+                // Reset any fit-driven sizing so xterm renders at natural size
+                xtermEl.style.transform = '';
+                xtermEl.style.width = '';
+                xtermEl.style.height = '';
+                try { term.resize(80, 24); } catch(e) {}
+                // Measure after resize settles
+                requestAnimationFrame(() => {
+                    const cw = body.clientWidth, ch = body.clientHeight;
+                    const tw = xtermEl.scrollWidth || xtermEl.offsetWidth;
+                    const th = xtermEl.scrollHeight || xtermEl.offsetHeight;
+                    if (tw > 0 && th > 0) {
+                        const scale = Math.min(cw / tw, ch / th);
+                        xtermEl.style.transform = `scale(${scale})`;
+                        xtermEl.style.width = tw + 'px';
+                        xtermEl.style.height = th + 'px';
+                    }
+                });
+            } else {
+                // Fit mode: auto rows/cols to fill container
+                body.classList.remove('scale-mode');
+                const xtermEl = body.querySelector('.xterm');
+                if (xtermEl) {
+                    xtermEl.style.transform = '';
+                    xtermEl.style.width = '';
+                    xtermEl.style.height = '';
+                }
+                try { fa.fit(); } catch(e) {}
+            }
+        }
+
+        function setTermMode(mode) {
+            settings.termMode = mode;
+            document.querySelectorAll('.term-mode-btn').forEach(b => {
+                b.classList.toggle('active', b.dataset.m === mode);
+            });
+            // Re-fit all visible terminals
+            focusedSessions.forEach(name => fitTerminal(name));
+            saveSettings();
         }
 
         // ══════════════════════════════════════════
@@ -1329,6 +1393,13 @@
         window.addEventListener('resize', () => {
             focusedSessions.forEach(name => fitTerminal(name));
         });
+        // ResizeObserver for container-level resize (split toggle, etc.)
+        const focusPanels = document.getElementById('focus-panels');
+        if (focusPanels && typeof ResizeObserver !== 'undefined') {
+            new ResizeObserver(() => {
+                focusedSessions.forEach(name => fitTerminal(name));
+            }).observe(focusPanels);
+        }
 
         // ══════════════════════════════════════════
         // INITIALIZATION
@@ -1342,6 +1413,7 @@
 
         // Restore settings
         setTheme(settings.theme);
+        setTermMode(settings.termMode || 'fit');
         splitMode = !!settings.split;
         if (splitMode) document.getElementById('btn-split').classList.add('active');
 

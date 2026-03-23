@@ -209,6 +209,44 @@
         .focus-empty-icon { font-size: 32px; margin-bottom: 10px; opacity: 0.6; }
 
         /* ── DOCK (bottom strip) ────────────────── */
+        .dock-wrapper {
+            position: relative; flex-shrink: 0; z-index: 100;
+        }
+        .dock-wrapper .dock-fade-left,
+        .dock-wrapper .dock-fade-right {
+            position: absolute; top: 0; bottom: 0; width: 28px;
+            z-index: 101; pointer-events: none; opacity: 0;
+            transition: opacity 0.2s;
+        }
+        .dock-wrapper .dock-fade-left {
+            left: 0;
+            background: linear-gradient(to right, var(--dock-bg) 40%, transparent);
+        }
+        .dock-wrapper .dock-fade-right {
+            right: 0;
+            background: linear-gradient(to left, var(--dock-bg) 40%, transparent);
+        }
+        .dock-wrapper .dock-fade-left.visible,
+        .dock-wrapper .dock-fade-right.visible { opacity: 1; }
+        .dock-wrapper .dock-scroll-btn {
+            position: absolute; top: 50%; transform: translateY(-50%);
+            z-index: 102; width: 20px; height: 26px;
+            background: var(--pill-bg); border: 1px solid var(--border);
+            color: var(--text-dim); font-size: 11px; cursor: pointer;
+            border-radius: 6px; display: none; align-items: center;
+            justify-content: center; opacity: 0.7; transition: opacity 0.15s;
+        }
+        .dock-wrapper .dock-scroll-btn:hover { opacity: 1; background: var(--pill-active-bg); }
+        .dock-wrapper .dock-scroll-btn.visible { display: flex; }
+        .dock-wrapper .dock-scroll-left { left: 2px; }
+        .dock-wrapper .dock-scroll-right { right: 2px; }
+        @keyframes arrow-attention {
+            0%, 100% { background: var(--pill-bg); border-color: var(--border); }
+            50% { background: var(--red); border-color: var(--red); color: #fff; }
+        }
+        .dock-wrapper .dock-scroll-btn.has-attention {
+            animation: arrow-attention 1.5s ease-in-out infinite;
+        }
         .dock {
             height: 40px; min-height: 40px;
             display: flex; align-items: center;
@@ -216,8 +254,9 @@
             background: var(--dock-bg);
             border-top: 1px solid var(--border);
             overflow-x: auto; overflow-y: hidden;
-            flex-shrink: 0; z-index: 100;
+            flex-shrink: 0;
             -webkit-overflow-scrolling: touch;
+            scroll-behavior: smooth;
         }
         .dock::-webkit-scrollbar { height: 3px; }
 
@@ -242,7 +281,7 @@
             width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0;
         }
         .dock-pill .pill-name {
-            max-width: 100px; overflow: hidden; text-overflow: ellipsis;
+            overflow: hidden; text-overflow: ellipsis;
         }
         .dock-pill .pill-eye { font-size: 10px; }
 
@@ -525,7 +564,7 @@
             .topbar-status { display: none; }
             .dock { height: 36px; gap: 4px; padding: 0 4px; }
             .dock-pill { padding: 3px 8px; font-size: 10px; }
-            .dock-pill .pill-name { max-width: 60px; }
+            .dock-pill .pill-name { max-width: 120px; }
             .expose-grid {
                 grid-template-columns: 1fr;
                 padding: 8px 12px;
@@ -533,7 +572,7 @@
             .focus-header { padding: 2px 8px; }
         }
         @media (min-width: 768px) and (max-width: 1024px) {
-            .dock-pill .pill-name { max-width: 80px; }
+            .dock-pill .pill-name { max-width: 160px; }
             .expose-grid { grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); }
         }
     </style>
@@ -592,6 +631,11 @@
     </div>
 
     <!-- ═══ DOCK ═══ -->
+    <div class="dock-wrapper">
+        <div class="dock-fade-left" id="dock-fade-left"></div>
+        <div class="dock-fade-right" id="dock-fade-right"></div>
+        <button class="dock-scroll-btn dock-scroll-left" id="dock-scroll-left" onclick="dockScrollLeft()">◀</button>
+        <button class="dock-scroll-btn dock-scroll-right" id="dock-scroll-right" onclick="dockScrollRight()">▶</button>
     <div class="dock" id="dock">
         <!-- Pills rendered by JS -->
         <div class="dock-create-form" id="dock-create-form">
@@ -601,6 +645,7 @@
             <button class="dock-create-cancel" onclick="cancelCreate()">✕</button>
         </div>
         <div class="dock-add" id="dock-add" onclick="showCreate()" title="New session (+)">+</div>
+    </div>
     </div>
 
     <!-- ═══ CONTEXT MENU ═══ -->
@@ -716,16 +761,8 @@
             // Remove old pills (keep create form and add button)
             dock.querySelectorAll('.dock-pill').forEach(p => p.remove());
 
-            // Sort: attention first, then by state priority, then name
-            const sorted = [...sessionsList].sort((a, b) => {
-                const aAtt = attentionSet.has(a.name) ? 0 : 1;
-                const bAtt = attentionSet.has(b.name) ? 0 : 1;
-                if (aAtt !== bAtt) return aAtt - bAtt;
-                const aPri = statePriority(a.state);
-                const bPri = statePriority(b.state);
-                if (aPri !== bPri) return aPri - bPri;
-                return a.name.localeCompare(b.name);
-            });
+            // Stable sort: alphabetical by name (spatial — pills don't move)
+            const sorted = [...sessionsList].sort((a, b) => a.name.localeCompare(b.name));
 
             const form = document.getElementById('dock-create-form');
             sorted.forEach(s => {
@@ -745,6 +782,49 @@
                 pill.oncontextmenu = (e) => { e.preventDefault(); showCtxMenu(e, s.name); };
                 dock.insertBefore(pill, form);
             });
+            updateDockScrollState();
+        }
+
+        // ── Dock scroll/overflow logic ──
+        function updateDockScrollState() {
+            const dock = document.getElementById('dock');
+            const fadeL = document.getElementById('dock-fade-left');
+            const fadeR = document.getElementById('dock-fade-right');
+            const btnL = document.getElementById('dock-scroll-left');
+            const btnR = document.getElementById('dock-scroll-right');
+            if (!dock || !fadeL || !fadeR || !btnL || !btnR) return;
+
+            const overflows = dock.scrollWidth > dock.clientWidth + 2;
+            const atLeft = dock.scrollLeft <= 2;
+            const atRight = dock.scrollLeft + dock.clientWidth >= dock.scrollWidth - 2;
+
+            fadeL.classList.toggle('visible', overflows && !atLeft);
+            fadeR.classList.toggle('visible', overflows && !atRight);
+            btnL.classList.toggle('visible', overflows && !atLeft);
+            btnR.classList.toggle('visible', overflows && !atRight);
+
+            // Check for off-screen attention pills in each direction
+            const pills = dock.querySelectorAll('.dock-pill.attention, .dock-pill.error-glow');
+            let attentionLeft = false, attentionRight = false;
+            const dockRect = dock.getBoundingClientRect();
+            pills.forEach(p => {
+                const r = p.getBoundingClientRect();
+                if (r.right < dockRect.left + 8) attentionLeft = true;
+                if (r.left > dockRect.right - 8) attentionRight = true;
+            });
+            btnL.classList.toggle('has-attention', attentionLeft);
+            btnR.classList.toggle('has-attention', attentionRight);
+        }
+
+        function dockScrollLeft() {
+            const dock = document.getElementById('dock');
+            dock.scrollBy({ left: -200, behavior: 'smooth' });
+            setTimeout(updateDockScrollState, 350);
+        }
+        function dockScrollRight() {
+            const dock = document.getElementById('dock');
+            dock.scrollBy({ left: 200, behavior: 'smooth' });
+            setTimeout(updateDockScrollState, 350);
         }
 
         // ══════════════════════════════════════════
@@ -1000,6 +1080,12 @@
         window.setTheme = setTheme;
         window.ctxAdopt = ctxAdopt;
         window.ctxClose = ctxClose;
+        window.dockScrollLeft = dockScrollLeft;
+        window.dockScrollRight = dockScrollRight;
+
+        // Update dock fades/arrows on scroll
+        document.getElementById('dock').addEventListener('scroll', updateDockScrollState);
+        window.addEventListener('resize', updateDockScrollState);
 
         function adoptFocused() {
             const name = focusedSessions[0];

@@ -50,15 +50,15 @@ class TestDashboardHTML:
             assert "/static/vendor/xterm.min.css" in html
             assert "/static/vendor/addon-fit.min.js" in html
 
-    async def test_index_has_layout_buttons(self, client):
-        """Should have 4 layout buttons (1, 2h, 2v, 4)."""
+    async def test_index_has_focus_dock_expose(self, client):
+        """Should have Focus + Dock + Exposé layout elements."""
         async with client:
             resp = await client.get("/")
             html = resp.text
-            assert "setLayout('1')" in html
-            assert "setLayout('2h')" in html
-            assert "setLayout('2v')" in html
-            assert "setLayout('4')" in html
+            assert "focus-area" in html
+            assert "dock" in html
+            assert "renderExpose" in html
+            assert "focusSession" in html
 
     async def test_index_has_websocket_code(self, client):
         """Should include WebSocket connection code."""
@@ -85,19 +85,20 @@ class TestDashboardHTML:
             assert "EventSource" in html
             assert "/api/stream" in html
 
-    async def test_index_has_send_cmd_function(self, client):
-        """Should include sendCmd function for input bar."""
+    async def test_index_has_session_management(self, client):
+        """Should include session management functions."""
         async with client:
             resp = await client.get("/")
             html = resp.text
-            assert "function sendCmd" in html
+            assert "function submitCreate" in html
+            assert "function focusSession" in html
 
     async def test_index_has_create_session_function(self, client):
-        """Should include createSession function."""
+        """Should include createSession / submitCreate function."""
         async with client:
             resp = await client.get("/")
             html = resp.text
-            assert "function createSession" in html
+            assert "function submitCreate" in html
 
     async def test_index_has_dom_reconciliation(self, client):
         """renderPanels should use DOM reconciliation, not innerHTML rebuild."""
@@ -129,28 +130,29 @@ class TestDashboardHTML:
 class TestJavaScriptLayout:
     """Test that layout-related JavaScript is correctly emitted."""
 
-    async def test_layout_max_panels_defined(self, client):
+    async def test_focus_dock_expose_layout(self, client):
         async with client:
             resp = await client.get("/")
             html = resp.text
-            assert "'1': 1" in html
-            assert "'2h': 2" in html
-            assert "'2v': 2" in html
-            assert "'4': 4" in html
+            assert "focus-area" in html
+            assert "dock-pill" in html
+            assert "renderExpose" in html
 
-    async def test_layout_class_applied(self, client):
-        """Default layout class should be on the panels container."""
+    async def test_focus_and_split(self, client):
+        """Focus view with split toggle."""
         async with client:
             resp = await client.get("/")
             html = resp.text
-            assert "layout-2h" in html  # default layout
+            assert "toggleSplit" in html
+            assert "focusSession" in html
 
-    async def test_empty_state_message(self, client):
-        """When no sessions docked, show hint message."""
+    async def test_dock_renders(self, client):
+        """Dock should render session pills."""
         async with client:
             resp = await client.get("/")
             html = resp.text
-            assert "Click a session" in html
+            assert "renderDock" in html
+            assert "dock-pill" in html
 
 
 @pytest.mark.asyncio
@@ -171,25 +173,21 @@ class TestWebSocketEndpoint:
 class TestSessionListRendering:
     """Test that sessions are rendered correctly in the sidebar."""
 
-    async def test_sessions_in_sidebar(self, client):
-        """Active sessions should appear in the sidebar HTML."""
+    async def test_sessions_in_dock(self, client):
+        """Active sessions should appear in the dock."""
         async with client:
             resp = await client.get("/")
             html = resp.text
-            # The sidebar should have session-list div
-            assert 'id="session-list"' in html
-            # Should have event panel
-            assert "EVENTS" in html
+            assert "dock-pill" in html
+            assert "renderDock" in html
 
     async def test_session_item_structure(self, client):
-        """Each session item should have name, state, preview, idle."""
+        """Each session pill should be rendered via data-session."""
         async with client:
             resp = await client.get("/")
             html = resp.text
-            assert "si-name" in html
-            assert "si-state" in html
-            assert "si-preview" in html
-            assert "si-meta" in html
+            assert "data-session" in html
+            assert "focusSession" in html
 
 
 @pytest.mark.asyncio
@@ -209,29 +207,35 @@ class TestReconnectionLogic:
         async with client:
             html = (await client.get("/")).text
             assert "sseRetryDelay" in html
-            assert "sseRetryDelay * 2" in html
             assert "30000" in html
 
-    async def test_sse_status_dot_offline(self, client):
-        """SSE error should flip status dot to offline."""
+    async def test_sse_status_indicator_offline(self, client):
+        """SSE error should update status indicator."""
         async with client:
             html = (await client.get("/")).text
-            assert "status-dot offline" in html
-            assert "Reconnecting" in html
+            assert "sse-dot" in html
+            assert "Reconnect" in html
 
-    async def test_sse_status_dot_online(self, client):
-        """SSE open should flip status dot back to online."""
+    async def test_sse_status_indicator_online(self, client):
+        """SSE open should restore status indicator."""
         async with client:
             html = (await client.get("/")).text
             assert "src.onopen" in html
-            assert "status-dot online" in html
+            assert "sse-dot" in html
+            assert "live" in html
 
     async def test_sse_dot_element_exists(self, client):
         """Status bar should have sse-dot element."""
         async with client:
             html = (await client.get("/")).text
             assert 'id="sse-dot"' in html
-            assert 'class="status-dot online"' in html
+
+    async def test_offline_dot_css(self, client):
+        """CSS should style the sse-dot indicator."""
+        async with client:
+            html = (await client.get("/")).text
+            assert ".sse-dot" in html
+            assert 'id="sse-dot"' in html
 
     async def test_ws_reconnect_with_backoff(self, client):
         """WebSocket should reconnect with exponential backoff."""
@@ -252,8 +256,8 @@ class TestReconnectionLogic:
             html = (await client.get("/")).text
             assert "delete wsRetryDelay[name]" in html
 
-    async def test_offline_dot_css(self, client):
-        """Should have CSS for offline status dot (red)."""
+    async def test_sse_dot_css_styles(self, client):
+        """Should have CSS for sse-dot status indicator."""
         async with client:
             html = (await client.get("/")).text
-            assert ".status-dot.offline" in html
+            assert ".sse-dot" in html

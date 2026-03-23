@@ -682,6 +682,16 @@
                 <button class="theme-btn term-mode-btn" data-m="fit" onclick="setTermMode('fit')">Fit</button>
                 <button class="theme-btn term-mode-btn" data-m="scale" onclick="setTermMode('scale')">Scale</button>
             </div>
+            <div id="scale-size-row" style="display:none; margin-top:6px;">
+                <div style="font-size:11px;color:var(--text-dim);margin-bottom:4px">Scale Size</div>
+                <div class="theme-grid" style="grid-template-columns:1fr 1fr 1fr 1fr;">
+                    <button class="theme-btn scale-btn" data-sz="auto" onclick="setScaleSize('auto')" title="Capture from Fit">Auto</button>
+                    <button class="theme-btn scale-btn" data-sz="80x24" onclick="setScaleSize('80x24')">80×24</button>
+                    <button class="theme-btn scale-btn" data-sz="132x43" onclick="setScaleSize('132x43')">132×43</button>
+                    <button class="theme-btn scale-btn" data-sz="160x50" onclick="setScaleSize('160x50')">160×50</button>
+                </div>
+                <div id="scale-size-info" style="font-size:10px;color:var(--text-dim);margin-top:3px"></div>
+            </div>
         </div>
         <div class="settings-section" style="margin-bottom:0; margin-top:10px">
             <div class="settings-label">Sessions</div>
@@ -718,7 +728,7 @@
         // SETTINGS (localStorage)
         // ══════════════════════════════════════════
         const STORAGE_KEY = 'zpilot_v2';
-        let settings = { theme: 'dark', focused: null, focused2: null, split: false, expose: false, termMode: 'fit' };
+        let settings = { theme: 'dark', focused: null, focused2: null, split: false, expose: false, termMode: 'fit', scaleSize: 'auto' };
         try {
             const s = JSON.parse(localStorage.getItem(STORAGE_KEY));
             if (s) Object.assign(settings, s);
@@ -1224,6 +1234,9 @@
             delete termLastSize[name];
         }
 
+        // Track last Fit dimensions per terminal for auto scale capture
+        let fitDimensions = {};  // name → {cols, rows}
+
         function fitTerminal(name) {
             const fa = termFitAddons[name];
             const term = terminals[name];
@@ -1232,26 +1245,35 @@
             if (!body) return;
 
             if (settings.termMode === 'scale') {
-                // Scale mode: fixed 80x24, CSS-scaled to fill container
+                // Determine target cols/rows
+                let cols = 80, rows = 24;
+                if (settings.scaleSize === 'auto') {
+                    // Use captured Fit dimensions (or fall back to 80x24)
+                    const cap = fitDimensions[name];
+                    if (cap) { cols = cap.cols; rows = cap.rows; }
+                } else {
+                    const [c, r] = settings.scaleSize.split('x').map(Number);
+                    if (c > 0 && r > 0) { cols = c; rows = r; }
+                }
+                // Scale mode: fixed cols×rows, CSS-scaled to fill container
                 body.classList.add('scale-mode');
                 const xtermEl = body.querySelector('.xterm');
                 if (!xtermEl) return;
-                // Reset any fit-driven sizing so xterm renders at natural size
                 xtermEl.style.transform = '';
                 xtermEl.style.width = '';
                 xtermEl.style.height = '';
-                try { term.resize(80, 24); } catch(e) {}
-                // Measure after resize settles
+                try { term.resize(cols, rows); } catch(e) {}
                 requestAnimationFrame(() => {
                     const cw = body.clientWidth, ch = body.clientHeight;
-                    const tw = xtermEl.scrollWidth || xtermEl.offsetWidth;
-                    const th = xtermEl.scrollHeight || xtermEl.offsetHeight;
+                    const tw = xtermEl.offsetWidth;
+                    const th = xtermEl.offsetHeight;
                     if (tw > 0 && th > 0) {
                         const scale = Math.min(cw / tw, ch / th);
                         xtermEl.style.transform = `scale(${scale})`;
                         xtermEl.style.width = tw + 'px';
                         xtermEl.style.height = th + 'px';
                     }
+                    updateScaleSizeInfo(cols, rows);
                 });
             } else {
                 // Fit mode: auto rows/cols to fill container
@@ -1263,17 +1285,44 @@
                     xtermEl.style.height = '';
                 }
                 try { fa.fit(); } catch(e) {}
+                // Capture dimensions for auto scale
+                fitDimensions[name] = { cols: term.cols, rows: term.rows };
             }
         }
 
         function setTermMode(mode) {
+            // If switching Fit→Scale with auto, capture current Fit dimensions first
+            if (mode === 'scale' && settings.termMode === 'fit') {
+                focusedSessions.forEach(name => {
+                    const term = terminals[name];
+                    if (term) fitDimensions[name] = { cols: term.cols, rows: term.rows };
+                });
+            }
             settings.termMode = mode;
             document.querySelectorAll('.term-mode-btn').forEach(b => {
                 b.classList.toggle('active', b.dataset.m === mode);
             });
+            // Show/hide scale size options
+            const row = document.getElementById('scale-size-row');
+            if (row) row.style.display = mode === 'scale' ? '' : 'none';
             // Re-fit all visible terminals
             focusedSessions.forEach(name => fitTerminal(name));
             saveSettings();
+        }
+
+        function setScaleSize(sz) {
+            settings.scaleSize = sz;
+            document.querySelectorAll('.scale-btn').forEach(b => {
+                b.classList.toggle('active', b.dataset.sz === sz);
+            });
+            focusedSessions.forEach(name => fitTerminal(name));
+            saveSettings();
+        }
+        window.setScaleSize = setScaleSize;
+
+        function updateScaleSizeInfo(cols, rows) {
+            const el = document.getElementById('scale-size-info');
+            if (el) el.textContent = `${cols}×${rows} scaled`;
         }
 
         // ══════════════════════════════════════════
@@ -1414,6 +1463,7 @@
         // Restore settings
         setTheme(settings.theme);
         setTermMode(settings.termMode || 'fit');
+        setScaleSize(settings.scaleSize || 'auto');
         splitMode = !!settings.split;
         if (splitMode) document.getElementById('btn-split').classList.add('active');
 

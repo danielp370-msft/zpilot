@@ -1226,7 +1226,8 @@
                 try {
                     const msg = JSON.parse(e.data);
                     if (msg.type === 'output') {
-                        term.write('\x1b[H' + msg.data);
+                        // Reset + cursor home so clear actually clears
+                        term.write('\x1b[2J\x1b[H' + msg.data);
                     } else if (msg.type === 'append') {
                         term.write(msg.data);
                     }

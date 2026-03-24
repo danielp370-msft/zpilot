@@ -390,6 +390,55 @@ async def send_special_key(
     return True
 
 
+async def dump_screen_rendered(
+    session: str,
+    pane_name: str | None = None,
+    cols: int = 200,
+    rows: int = 50,
+) -> str:
+    """Read pane log file and render through pyte terminal emulator.
+
+    Returns the rendered screen state (what you'd see on screen) rather
+    than raw PTY output.  This avoids cursor-movement artifacts from
+    bash readline (up-arrow history) that cause scroll jumps in the web UI.
+    """
+    import pyte
+
+    # Find the log file
+    raw = ""
+    if pane_name:
+        log_file = LOG_DIR / f"{session}--{pane_name}.log"
+        if log_file.exists() and log_file.stat().st_size > 0:
+            raw = log_file.read_text(errors="replace")
+    if not raw:
+        pattern = f"{session}--*.log"
+        logs = sorted(LOG_DIR.glob(pattern), key=lambda p: p.stat().st_mtime, reverse=True)
+        if logs:
+            raw = logs[0].read_text(errors="replace")
+    if not raw:
+        return ""
+
+    # Only feed the tail of the log to keep rendering fast.
+    # 200KB is enough to fill any reasonable screen several times over.
+    max_bytes = 200_000
+    if len(raw) > max_bytes:
+        raw = raw[-max_bytes:]
+
+    # Render through pyte
+    screen = pyte.Screen(cols, rows)
+    stream = pyte.Stream(screen)
+    stream.feed(raw)
+
+    # Build output: rendered lines, trimming trailing blank lines
+    lines = []
+    for i in range(rows):
+        lines.append(screen.display[i].rstrip())
+    while lines and not lines[-1]:
+        lines.pop()
+
+    return "\n".join(lines)
+
+
 async def dump_pane(
     session: str | None = None,
     pane_name: str | None = None,

@@ -142,8 +142,8 @@ async def ws_terminal(websocket: WebSocket, session_name: str):
     is_focused = True  # assume focused on connect
 
     try:
-        # Send initial content
-        content = await zellij.dump_pane(session=session_name, pane_name="main", tail_lines=200)
+        # Send initial content (pyte renders log → clean screen state)
+        content = await zellij.dump_screen_rendered(session_name, pane_name="main")
         if content:
             normalized = _normalize_for_xterm(content)
             await websocket.send_json({"type": "output", "data": normalized})
@@ -157,29 +157,36 @@ async def ws_terminal(websocket: WebSocket, session_name: str):
             while True:
                 await asyncio.sleep(0.1 if is_focused else 1.0)
                 try:
-                    content = await zellij.dump_pane(
-                        session=session_name, pane_name="main", tail_lines=200
-                    )
+                    # Pyte renders raw log → clean screen (no readline artifacts)
+                    content = await zellij.dump_screen_rendered(session_name, pane_name="main")
                     if not content:
+                        if last_full_content:
+                            await websocket.send_json({"type": "output", "data": ""})
+                            last_hash = ""
+                            last_full_content = ""
                         continue
                     import hashlib
                     h = hashlib.md5(content.encode()).hexdigest()
                     if h != last_hash:
-                        # Send incremental: if new content starts with old, send only the delta
                         if last_full_content and content.startswith(last_full_content):
                             delta = content[len(last_full_content):]
-                            # If delta contains clear-screen or cursor positioning,
-                            # send full output so xterm.js can replay from clean state
-                            has_cursor = delta and _re.search(r'\x1b\[[0-9;]*[HfJ]', delta)
-                            if delta and ('\x1b[2J' in delta or '\x1b[?1049' in delta or has_cursor):
-                                normalized = _normalize_for_xterm(content)
-                                await websocket.send_json({"type": "output", "data": normalized})
-                            elif delta:
-                                normalized_delta = _normalize_for_xterm(delta)
-                                await websocket.send_json({"type": "append", "data": normalized_delta})
+                            if delta:
+                                await websocket.send_json({"type": "append", "data": delta})
                         else:
-                            normalized = _normalize_for_xterm(content)
-                            await websocket.send_json({"type": "output", "data": normalized})
+                            # Line-diff: patch only changed lines to avoid scroll jump
+                            old_lines = last_full_content.split('\n') if last_full_content else []
+                            new_lines = content.split('\n')
+                            if (old_lines and len(old_lines) == len(new_lines)):
+                                diffs = [i for i in range(len(old_lines)) if old_lines[i] != new_lines[i]]
+                                if 0 < len(diffs) <= 5:
+                                    patches = []
+                                    for d in diffs:
+                                        patches.append(f"\x1b[{d+1};1H\x1b[2K{new_lines[d]}")
+                                    await websocket.send_json({"type": "append", "data": ''.join(patches)})
+                                else:
+                                    await websocket.send_json({"type": "output", "data": content})
+                            else:
+                                await websocket.send_json({"type": "output", "data": content})
                         last_hash = h
                         last_full_content = content
                         # Update detector with fresh content

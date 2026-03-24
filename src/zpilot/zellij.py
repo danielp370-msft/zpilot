@@ -409,12 +409,12 @@ async def dump_screen_rendered(
     if pane_name:
         log_file = LOG_DIR / f"{session}--{pane_name}.log"
         if log_file.exists() and log_file.stat().st_size > 0:
-            raw = log_file.read_text(errors="replace")
+            raw = log_file.read_bytes().decode("utf-8", errors="replace")
     if not raw:
         pattern = f"{session}--*.log"
         logs = sorted(LOG_DIR.glob(pattern), key=lambda p: p.stat().st_mtime, reverse=True)
         if logs:
-            raw = logs[0].read_text(errors="replace")
+            raw = logs[0].read_bytes().decode("utf-8", errors="replace")
     if not raw:
         return ""
 
@@ -429,14 +429,96 @@ async def dump_screen_rendered(
     stream = pyte.Stream(screen)
     stream.feed(raw)
 
-    # Build output: rendered lines, trimming trailing blank lines
+    # Build output with ANSI colors from pyte buffer
     lines = []
-    for i in range(rows):
-        lines.append(screen.display[i].rstrip())
+    for row_idx in range(rows):
+        line_parts: list[str] = []
+        prev_fg = "default"
+        prev_bg = "default"
+        prev_bold = False
+        prev_underline = False
+        prev_reverse = False
+
+        # Walk columns, find last non-space to avoid trailing padding
+        row_buf = screen.buffer[row_idx]
+        last_col = -1
+        for c in range(cols - 1, -1, -1):
+            if row_buf[c].data.strip():
+                last_col = c
+                break
+
+        for col in range(last_col + 1):
+            char = row_buf[col]
+            ch = char.data if char.data else " "
+            fg, bg = char.fg, char.bg
+            bold = char.bold
+            underline = getattr(char, "underscore", False)
+            reverse = char.reverse
+
+            # Emit SGR only when attributes change
+            if fg != prev_fg or bg != prev_bg or bold != prev_bold or underline != prev_underline or reverse != prev_reverse:
+                codes: list[str] = ["0"]  # reset first
+                if bold:
+                    codes.append("1")
+                if underline:
+                    codes.append("4")
+                if reverse:
+                    codes.append("7")
+                if fg != "default":
+                    codes.append(_pyte_color_to_sgr(fg, is_bg=False))
+                if bg != "default":
+                    codes.append(_pyte_color_to_sgr(bg, is_bg=True))
+                line_parts.append(f"\x1b[{';'.join(codes)}m")
+                prev_fg, prev_bg = fg, bg
+                prev_bold, prev_underline, prev_reverse = bold, underline, reverse
+
+            line_parts.append(ch)
+
+        # Reset at end of line if styling was active
+        if prev_fg != "default" or prev_bg != "default" or prev_bold:
+            line_parts.append("\x1b[0m")
+
+        lines.append("".join(line_parts))
+
+    # Trim trailing blank lines
     while lines and not lines[-1]:
         lines.pop()
 
     return "\n".join(lines)
+
+
+# ── ANSI color helpers for pyte buffer ──────────────────────────
+
+_NAMED_FG = {
+    "black": "30", "red": "31", "green": "32", "brown": "33",
+    "yellow": "33", "blue": "34", "magenta": "35", "cyan": "36",
+    "white": "37", "default": "39",
+}
+_NAMED_BG = {
+    "black": "40", "red": "41", "green": "42", "brown": "43",
+    "yellow": "43", "blue": "44", "magenta": "45", "cyan": "46",
+    "white": "47", "default": "49",
+}
+
+
+def _pyte_color_to_sgr(color: str, is_bg: bool = False) -> str:
+    """Convert a pyte color value to an SGR parameter string."""
+    table = _NAMED_BG if is_bg else _NAMED_FG
+    if color in table:
+        return table[color]
+    # 256-color: pyte stores as e.g. "123" (string of int)
+    if color.isdigit():
+        prefix = "48" if is_bg else "38"
+        return f"{prefix};5;{color}"
+    # 24-bit hex: pyte stores as "aabbcc"
+    if len(color) == 6:
+        try:
+            r, g, b = int(color[0:2], 16), int(color[2:4], 16), int(color[4:6], 16)
+            prefix = "48" if is_bg else "38"
+            return f"{prefix};2;{r};{g};{b}"
+        except ValueError:
+            pass
+    return "39" if not is_bg else "49"
 
 
 async def dump_pane(

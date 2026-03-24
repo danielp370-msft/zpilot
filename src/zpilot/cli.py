@@ -391,6 +391,7 @@ def nodes() -> None:
 @click.option("--host", default=None, help="Bind address (default: from config)")
 @click.option("--port", type=int, default=None, help="Port number (default: from config)")
 @click.option("--token", default=None, help="Auth token (overrides config)")
+@click.option("--no-ssl", is_flag=True, default=False, help="Disable TLS (use when behind a reverse proxy or devtunnel)")
 @click.option("--tunnel", is_flag=True, default=False, help="Also start a devtunnel to expose the server publicly")
 @click.option("--tunnel-name", default="zpilot", help="Devtunnel name (default: zpilot)")
 @click.option("--tunnel-anonymous", is_flag=True, default=False, help="Allow anonymous tunnel access (for testing)")
@@ -398,6 +399,7 @@ def serve_http_cmd(
     host: str | None,
     port: int | None,
     token: str | None,
+    no_ssl: bool,
     tunnel: bool,
     tunnel_name: str,
     tunnel_anonymous: bool,
@@ -415,6 +417,9 @@ def serve_http_cmd(
         config.http_port = port
     if token is not None:
         config.http_token = token
+    if no_ssl or tunnel:
+        # Disable app-level TLS: devtunnel/reverse proxy handles TLS
+        config.http_tls = False
 
     if tunnel:
         from .devtunnel import get_or_create_tunnel, host_tunnel, is_devtunnel_available

@@ -168,25 +168,11 @@ async def ws_terminal(websocket: WebSocket, session_name: str):
                     import hashlib
                     h = hashlib.md5(content.encode()).hexdigest()
                     if h != last_hash:
-                        if last_full_content and content.startswith(last_full_content):
-                            delta = content[len(last_full_content):]
-                            if delta:
-                                await websocket.send_json({"type": "append", "data": delta})
-                        else:
-                            # Line-diff: patch only changed lines to avoid scroll jump
-                            old_lines = last_full_content.split('\n') if last_full_content else []
-                            new_lines = content.split('\n')
-                            if (old_lines and len(old_lines) == len(new_lines)):
-                                diffs = [i for i in range(len(old_lines)) if old_lines[i] != new_lines[i]]
-                                if 0 < len(diffs) <= 5:
-                                    patches = []
-                                    for d in diffs:
-                                        patches.append(f"\x1b[{d+1};1H\x1b[2K{new_lines[d]}")
-                                    await websocket.send_json({"type": "append", "data": ''.join(patches)})
-                                else:
-                                    await websocket.send_json({"type": "output", "data": content})
-                            else:
-                                await websocket.send_json({"type": "output", "data": content})
+                        # Always send full screen state — pyte renders
+                        # a complete snapshot each time, so append/delta
+                        # optimizations break cursor positioning.
+                        normalized = _normalize_for_xterm(content)
+                        await websocket.send_json({"type": "output", "data": normalized})
                         last_hash = h
                         last_full_content = content
                         # Update detector with fresh content

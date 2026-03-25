@@ -9,6 +9,11 @@ Each node runs its own zpilot HTTP server, exposing:
   - /api/siblings     — list known peer nodes (mesh discovery + health)
   - /api/proxy/{node} — forward a tool call to a sibling node
   - /api/fleet-health — health status of all known nodes
+  - /api/sessions              — list local sessions (mesh discovery)
+  - /api/peers                 — list directly-reachable peers
+  - /api/session/{name}/resize — resize a local session's terminal
+  - /api/session/{name}/send   — send text + enter to a local session
+  - /api/session/{name}/keys   — send special keys to a local session
 
 All endpoints except /health require Bearer token authentication.
 TLS is enabled by default for all network communication.
@@ -491,6 +496,130 @@ def create_http_app(config: ZpilotConfig | None = None) -> FastAPI:
             }
         except Exception as e:
             return JSONResponse({"error": str(e)}, status_code=500)
+
+    # --- Session API (symmetric: every node exposes these) ---
+
+    @app.get("/api/sessions")
+    async def api_sessions():
+        """List all local zellij sessions. Symmetric endpoint for mesh discovery.
+
+        Returns a list of sessions with name, state, and preview lines.
+        Peers call this to discover what sessions are available on this node.
+        """
+        from .zellij import list_sessions, dump_pane
+        try:
+            sessions = await list_sessions()
+        except Exception:
+            return {"node": socket.gethostname(), "sessions": []}
+
+        result = []
+        for s in sessions:
+            entry = {
+                "name": s.name,
+                "is_current": s.is_current,
+                "managed": s.managed,
+            }
+            try:
+                content = await dump_pane(session=s.name, tail_lines=3)
+                lines = content.strip().splitlines()[-3:] if content.strip() else []
+                entry["last_lines"] = lines
+                entry["last_line"] = lines[-1][:80] if lines else ""
+            except Exception:
+                entry["last_lines"] = []
+                entry["last_line"] = ""
+            result.append(entry)
+
+        return {"node": socket.gethostname(), "sessions": result}
+
+    @app.get("/api/peers")
+    async def api_peers():
+        """List this node's directly-reachable peers (from its nodes.toml).
+
+        Enables mesh topology: any node can discover the network graph
+        by querying peers, who in turn list their own peers.
+        """
+        registry = NodeRegistry(load_nodes())
+        peers = []
+        for node in registry.all():
+            if node.is_local:
+                continue
+            peers.append({
+                "name": node.name,
+                "transport": node.transport_type,
+                "labels": node.labels,
+            })
+        return {"node": socket.gethostname(), "peers": peers}
+
+    @app.post("/api/session/{name}/resize")
+    async def api_session_resize(name: str, request: Request):
+        """Resize a local session's terminal. Symmetric endpoint."""
+        from .zellij import resize_pane
+        body = await request.json()
+        cols = int(body.get("cols", 80))
+        rows = int(body.get("rows", 24))
+        try:
+            resize_pane(name, cols, rows)
+        except Exception:
+            # FIFO not available — fallback to stty via zellij
+            import shlex
+            safe_name = shlex.quote(name)
+            stty_cmd = (
+                f"zellij --session {safe_name} action write-chars "
+                f"{shlex.quote(f'stty rows {rows} cols {cols}; clear')}"
+            )
+            enter_cmd = f"zellij --session {safe_name} action write 10"
+            proc = await asyncio.create_subprocess_shell(
+                f"{stty_cmd} && {enter_cmd}",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            await proc.communicate()
+        return {"status": "resized", "session": name, "cols": cols, "rows": rows}
+
+    @app.post("/api/session/{name}/send")
+    async def api_session_send(name: str, request: Request):
+        """Send text to a local session. Symmetric endpoint."""
+        import shlex
+        body = await request.json()
+        text = body.get("text", "")
+        safe_name = shlex.quote(name)
+        safe_text = shlex.quote(text)
+        cmd = f"zellij --session {safe_name} action write-chars {safe_text}"
+        enter = f"zellij --session {safe_name} action write 10"
+        proc = await asyncio.create_subprocess_shell(
+            f"{cmd} && {enter}",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        await proc.communicate()
+        return {"status": "sent", "session": name}
+
+    @app.post("/api/session/{name}/keys")
+    async def api_session_keys(name: str, request: Request):
+        """Send special keys to a local session. Symmetric endpoint."""
+        import shlex
+        keys = await request.json()  # expects a JSON array of key names
+        safe_name = shlex.quote(name)
+        key_map = {
+            "enter": "10", "tab": "9", "escape": "27",
+            "backspace": "8", "ctrl_c": "3", "ctrl_d": "4",
+            "ctrl_z": "26", "ctrl_l": "12", "ctrl_a": "1",
+            "ctrl_e": "5", "ctrl_r": "18", "ctrl_u": "21",
+            "ctrl_w": "23", "arrow_up": "27 91 65",
+            "arrow_down": "27 91 66", "arrow_left": "27 91 68",
+            "arrow_right": "27 91 67",
+        }
+        for key_name in keys:
+            zj_key = key_map.get(key_name.lower())
+            if zj_key:
+                cmd = f"zellij --session {safe_name} action write {zj_key}"
+                proc = await asyncio.create_subprocess_shell(
+                    cmd,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+                await proc.communicate()
+        return {"status": "keys_sent", "session": name, "count": len(keys)}
 
     return app
 

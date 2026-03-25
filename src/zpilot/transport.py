@@ -122,6 +122,16 @@ class Transport(ABC):
             return []
         return [f for f in result.stdout.splitlines() if f.strip()]
 
+    async def api_post(self, path: str, json: dict | None = None,
+                       timeout: float = 15.0) -> dict:
+        """Call a zpilot REST endpoint (POST). Override for HTTP transports."""
+        raise NotImplementedError("api_post requires MCP HTTP transport")
+
+    async def api_get(self, path: str, params: dict | None = None,
+                      timeout: float = 15.0) -> dict:
+        """Call a zpilot REST endpoint (GET). Override for HTTP transports."""
+        raise NotImplementedError("api_get requires MCP HTTP transport")
+
 
 class LocalTransport(Transport):
     """Transport for the local machine (direct subprocess)."""
@@ -379,6 +389,9 @@ class MCPTransport(Transport):
             headers["Authorization"] = f"Bearer {self.token}"
         return headers
 
+    class _NonRetryableError(Exception):
+        """Raised for errors that should not be retried (e.g., 4xx client errors)."""
+
     async def _retry_request(self, coro_factory, operation: str = "request"):
         """Execute an async HTTP request with retry and exponential backoff.
 
@@ -399,6 +412,8 @@ class MCPTransport(Transport):
                     result = await coro_factory(client)
                     self._circuit.record_success()
                     return result
+            except self._NonRetryableError as e:
+                raise ConnectionError(f"{operation}: {e}") from e
             except httpx.TimeoutException:
                 last_error = f"{operation} timed out"
             except httpx.ConnectError as e:
@@ -497,6 +512,50 @@ class MCPTransport(Transport):
             await self._retry_request(_do, "download")
         except ConnectionError as e:
             raise IOError(str(e)) from e
+
+    async def api_post(self, path: str, json: dict | None = None,
+                       timeout: float = 15.0) -> dict:
+        """Call a REST endpoint on the remote zpilot (POST).
+
+        This enables symmetric architecture — the local zpilot calls the
+        remote zpilot's own API endpoints instead of constructing ad-hoc
+        shell commands. Both nodes run identical code.
+        """
+        import httpx
+
+        async def _do(client: httpx.AsyncClient):
+            resp = await client.post(
+                f"{self.base_url}{path}",
+                json=json or {},
+                headers=self._headers(),
+                timeout=timeout,
+            )
+            if 400 <= resp.status_code < 500:
+                # Client errors are not retryable — raise immediately
+                raise _NonRetryableError(
+                    f"{resp.status_code} {resp.reason_phrase}"
+                )
+            resp.raise_for_status()
+            return resp.json()
+
+        return await self._retry_request(_do, f"api_post {path}")
+
+    async def api_get(self, path: str, params: dict | None = None,
+                      timeout: float = 15.0) -> dict:
+        """Call a REST endpoint on the remote zpilot (GET)."""
+        import httpx
+
+        async def _do(client: httpx.AsyncClient):
+            resp = await client.get(
+                f"{self.base_url}{path}",
+                params=params,
+                headers=self._headers(),
+                timeout=timeout,
+            )
+            resp.raise_for_status()
+            return resp.json()
+
+        return await self._retry_request(_do, f"api_get {path}")
 
 
 def create_transport(

@@ -47,8 +47,49 @@ async def index(request: Request):
 
 @app.get("/api/sessions")
 async def api_sessions():
-    """JSON API: session status."""
+    """JSON API: session status (aggregated from all nodes — mesh aware)."""
     return await _get_session_data()
+
+
+@app.get("/api/sessions/local")
+async def api_sessions_local():
+    """List local sessions only. Symmetric endpoint matching MCP server.
+
+    Peers call this to discover what sessions are available on this node.
+    """
+    import socket as _socket
+    try:
+        sessions = await zellij.list_sessions()
+    except Exception:
+        return {"node": _socket.gethostname(), "sessions": []}
+
+    result = []
+    for s in sessions:
+        entry = {"name": s.name, "is_current": s.is_current, "managed": s.managed}
+        try:
+            content = await zellij.dump_pane(session=s.name, tail_lines=3)
+            lines = content.strip().splitlines()[-3:] if content.strip() else []
+            entry["last_lines"] = lines
+            entry["last_line"] = lines[-1][:80] if lines else ""
+        except Exception:
+            entry["last_lines"] = []
+            entry["last_line"] = ""
+        result.append(entry)
+    return {"node": _socket.gethostname(), "sessions": result}
+
+
+@app.get("/api/peers")
+async def api_peers():
+    """List directly-reachable peers. Symmetric endpoint for mesh topology."""
+    import socket as _socket
+    peers = []
+    for node in node_registry.remote_nodes():
+        peers.append({
+            "name": node.name,
+            "transport": node.transport_type,
+            "labels": node.labels,
+        })
+    return {"node": _socket.gethostname(), "peers": peers}
 
 
 @app.get("/api/events")
@@ -136,18 +177,37 @@ async def api_adopt_session(name: str):
 
 
 @app.post("/api/session/{name:path}/send")
-async def api_send_to_session(name: str, text: str = Form(...)):
-    """Send text to a session's focused pane. Supports node:session format."""
+async def api_send_to_session(name: str, request: Request):
+    """Send text to a session's focused pane. Supports node:session format.
+
+    Accepts JSON {"text": "..."} or form data text=...
+    """
+    content_type = request.headers.get("content-type", "")
+    if "json" in content_type:
+        body = await request.json()
+        text = body.get("text", "")
+    else:
+        form = await request.form()
+        text = form.get("text", "")
     node, local_session = _parse_node_session(name)
     if node:
-        import shlex
-        safe_text = shlex.quote(text)
-        safe_session = shlex.quote(local_session)
-        cmd = f"zellij --session {safe_session} action write-chars {safe_text}"
-        await node.transport.exec(cmd, timeout=10, force_pty=True)
-        enter_cmd = f"zellij --session {safe_session} action write 10"
-        await node.transport.exec(enter_cmd, timeout=10, force_pty=True)
-        return {"status": "sent", "session": name, "text": text}
+        # Symmetric: call peer's own /api/session endpoint
+        try:
+            result = await node.transport.api_post(
+                f"/api/session/{local_session}/send",
+                json={"text": text},
+            )
+            return result
+        except (NotImplementedError, Exception):
+            # Fallback to exec for SSH transport
+            import shlex
+            safe_text = shlex.quote(text)
+            safe_session = shlex.quote(local_session)
+            cmd = f"zellij --session {safe_session} action write-chars {safe_text}"
+            await node.transport.exec(cmd, timeout=10, force_pty=True)
+            enter_cmd = f"zellij --session {safe_session} action write 10"
+            await node.transport.exec(enter_cmd, timeout=10, force_pty=True)
+            return {"status": "sent", "session": name, "text": text}
     await zellij.write_to_pane(text, session=name)
     await zellij.send_enter(session=name)
     detector.record_input(name, "main")
@@ -159,24 +219,65 @@ async def api_send_keys(name: str, keys: list[str]):
     """Send special keys to a session. Supports node:session format."""
     node, local_session = _parse_node_session(name)
     if node:
-        import shlex
-        safe_session = shlex.quote(local_session)
-        results = []
-        for key in keys:
-            zj_key = _map_key_to_zellij(key)
-            if zj_key is not None:
-                cmd = f"zellij --session {safe_session} action write {zj_key}"
-                await node.transport.exec(cmd, timeout=10, force_pty=True)
-                results.append({"key": key, "sent": True})
-            else:
-                results.append({"key": key, "sent": False})
-        return {"status": "sent", "session": name, "results": results}
+        # Symmetric: call peer's own /api/session endpoint
+        try:
+            result = await node.transport.api_post(
+                f"/api/session/{local_session}/keys",
+                json=keys,
+            )
+            return result
+        except (NotImplementedError, Exception):
+            # Fallback to exec for SSH transport
+            import shlex
+            safe_session = shlex.quote(local_session)
+            results = []
+            for key in keys:
+                zj_key = _map_key_to_zellij(key)
+                if zj_key is not None:
+                    cmd = f"zellij --session {safe_session} action write {zj_key}"
+                    await node.transport.exec(cmd, timeout=10, force_pty=True)
+                    results.append({"key": key, "sent": True})
+                else:
+                    results.append({"key": key, "sent": False})
+            return {"status": "sent", "session": name, "results": results}
     results = []
     for key in keys:
         ok = await zellij.send_special_key(key, session=name)
         results.append({"key": key, "sent": ok})
     detector.record_input(name, "main")
     return {"status": "sent", "session": name, "results": results}
+
+
+@app.post("/api/session/{name:path}/resize")
+async def api_resize_session(name: str, request: Request):
+    """Resize a session's terminal. Supports node:session format.
+
+    Accepts JSON {"cols": N, "rows": N} or query params.
+    Every zpilot node exposes this same endpoint — symmetric architecture.
+    """
+    body = await request.json()
+    cols = body.get("cols", 80)
+    rows = body.get("rows", 24)
+    node, local_session = _parse_node_session(name)
+    if node:
+        await _remote_resize_pane(node, local_session, cols, rows)
+        return {"status": "resized", "session": name, "cols": cols, "rows": rows}
+    # Local: use FIFO if available, stty fallback
+    ok = await zellij.resize_pane(cols, rows, session=name)
+    if not ok:
+        # No FIFO (not a zpilot-managed session) — use stty fallback
+        import shlex
+        safe_session = shlex.quote(name)
+        cmd = (
+            f"zellij --session {safe_session} action write-chars "
+            f"{shlex.quote(f'stty rows {rows} cols {cols}; clear')}"
+        )
+        result = await asyncio.create_subprocess_shell(cmd)
+        await result.wait()
+        enter_cmd = f"zellij --session {safe_session} action write 10"
+        result2 = await asyncio.create_subprocess_shell(enter_cmd)
+        await result2.wait()
+    return {"status": "resized", "session": name, "cols": cols, "rows": rows}
 
 
 @app.get("/api/pane/{session_name:path}/raw")
@@ -202,13 +303,14 @@ async def ws_terminal(websocket: WebSocket, session_name: str):
     last_hash = ""
     last_full_content = ""
     is_focused = True  # assume focused on connect
+    resize_task = None  # debounce remote resize
     ws_cols = 80  # track client terminal dimensions
     ws_rows = 24
 
     try:
         # Send initial content
         if node:
-            content = await _remote_dump_pane_web(node, local_session)
+            content = await _remote_dump_pane_web(node, local_session, cols=ws_cols, rows=ws_rows)
         else:
             content = await zellij.dump_screen_rendered(
                 session_name, pane_name="main", cols=ws_cols, rows=ws_rows
@@ -229,7 +331,7 @@ async def ws_terminal(websocket: WebSocket, session_name: str):
                 await asyncio.sleep(interval)
                 try:
                     if node:
-                        content = await _remote_dump_pane_web(node, local_session)
+                        content = await _remote_dump_pane_web(node, local_session, cols=ws_cols, rows=ws_rows)
                     else:
                         content = await zellij.dump_screen_rendered(
                             session_name, pane_name="main",
@@ -274,10 +376,22 @@ async def ws_terminal(websocket: WebSocket, session_name: str):
                         else:
                             await zellij.send_special_key(data["key"], session=session_name)
                     elif data.get("type") == "resize":
-                        ws_cols = data.get("cols", 80)
-                        ws_rows = data.get("rows", 24)
-                        if not node:
-                            await zellij.resize_pane(ws_cols, ws_rows, session=session_name)
+                        new_cols = data.get("cols", 80)
+                        new_rows = data.get("rows", 24)
+                        size_changed = (new_cols != ws_cols or new_rows != ws_rows)
+                        ws_cols = new_cols
+                        ws_rows = new_rows
+                        if size_changed:
+                            if node:
+                                # Debounce: cancel pending resize, schedule after 500ms
+                                if resize_task and not resize_task.done():
+                                    resize_task.cancel()
+                                async def _do_remote_resize(n=node, s=local_session, c=ws_cols, r=ws_rows):
+                                    await asyncio.sleep(0.5)
+                                    await _remote_resize_pane(n, s, c, r)
+                                resize_task = asyncio.create_task(_do_remote_resize())
+                            else:
+                                await zellij.resize_pane(ws_cols, ws_rows, session=session_name)
                         # Force refresh so pyte re-renders at new size
                         last_hash = ""
                         last_full_content = ""
@@ -327,22 +441,62 @@ def _parse_node_session(name: str):
 
 
 async def _remote_send_key(node, session: str, key: str):
-    """Send a special key to a remote session."""
-    import shlex
-    safe_session = shlex.quote(session)
-    zj_key = _map_key_to_zellij(key)
-    if zj_key is not None:
-        cmd = f"zellij --session {safe_session} action write {zj_key}"
-        await node.transport.exec(cmd, timeout=10, force_pty=True)
+    """Send a special key to a remote session via peer's API."""
+    try:
+        await node.transport.api_post(
+            f"/api/session/{session}/keys",
+            json=[_map_key_to_zellij(key) or key],
+        )
+    except (NotImplementedError, ConnectionError):
+        # Fallback for SSH transport or remote without endpoint
+        import shlex
+        safe_session = shlex.quote(session)
+        zj_key = _map_key_to_zellij(key)
+        if zj_key is not None:
+            cmd = f"zellij --session {safe_session} action write {zj_key}"
+            await node.transport.exec(cmd, timeout=10, force_pty=True)
 
 
 async def _remote_write_chars(node, session: str, text: str):
-    """Write raw text to a remote session."""
+    """Write raw text to a remote session via peer's API."""
+    try:
+        await node.transport.api_post(
+            f"/api/session/{session}/send",
+            json={"text": text},
+        )
+    except (NotImplementedError, ConnectionError):
+        # Fallback for SSH transport or remote without endpoint
+        import shlex
+        safe_session = shlex.quote(session)
+        safe_text = shlex.quote(text)
+        cmd = f"zellij --session {safe_session} action write-chars {safe_text}"
+        await node.transport.exec(cmd, timeout=10, force_pty=True)
+
+
+async def _remote_resize_pane(node, session: str, cols: int, rows: int):
+    """Resize a remote session via peer's own /api/session/{name}/resize.
+
+    Symmetric: calls the same endpoint the peer exposes locally.
+    The peer handles it with its own zellij.resize_pane() or stty fallback.
+    """
+    try:
+        await node.transport.api_post(
+            f"/api/session/{session}/resize",
+            json={"cols": cols, "rows": rows},
+        )
+        return
+    except (NotImplementedError, ConnectionError):
+        pass  # Fall through to stty fallback
+    # Fallback: ad-hoc stty (SSH transport or old remote code)
     import shlex
     safe_session = shlex.quote(session)
-    safe_text = shlex.quote(text)
-    cmd = f"zellij --session {safe_session} action write-chars {safe_text}"
-    await node.transport.exec(cmd, timeout=10, force_pty=True)
+    resize_cmd = (
+        f"zellij --session {safe_session} action write-chars "
+        f"{shlex.quote(f'stty rows {rows} cols {cols}; clear')}"
+    )
+    await node.transport.exec(resize_cmd, timeout=10, force_pty=True)
+    enter_cmd = f"zellij --session {safe_session} action write 10"
+    await node.transport.exec(enter_cmd, timeout=10, force_pty=True)
 
 
 # Key name → zellij byte value mapping
@@ -562,53 +716,96 @@ async def _get_session_data() -> list[dict]:
                 "last_line": f"error: {e}",
             })
 
-    # ── Remote node sessions ──
-    for node in node_registry.remote_nodes():
+    # ── Remote node sessions (symmetric: call peer's /api/sessions) ──
+    async def _fetch_remote_sessions(node):
+        """Fetch sessions from a remote peer via its own /api/sessions endpoint."""
+        entries = []
+        try:
+            data = await node.transport.api_get("/api/sessions", timeout=10.0)
+            for s in data.get("sessions", []):
+                remote_key = f"{node.name}:{s['name']}"
+                last_lines = s.get("last_lines", [])
+                entries.append({
+                    "name": remote_key,
+                    "node": node.name,
+                    "state": "active",
+                    "idle_seconds": 0,
+                    "is_current": False,
+                    "managed": s.get("managed", False),
+                    "last_lines": last_lines,
+                    "last_line": last_lines[-1][:80] if last_lines else "",
+                })
+            return entries
+        except (NotImplementedError, ConnectionError):
+            pass
+        # Fallback: exec for SSH transport or old remote code
         try:
             res = await node.transport.exec(
                 "zellij list-sessions --no-formatting 2>/dev/null", timeout=10.0
             )
             if not res.ok or not res.stdout.strip():
-                continue
+                return entries
             for line in res.stdout.strip().splitlines():
                 sess_name = line.strip().split()[0] if line.strip() else ""
                 if not sess_name:
                     continue
-                # Fetch a few lines of content for preview
                 remote_key = f"{node.name}:{sess_name}"
-                try:
-                    content = await _remote_dump_pane_web(node, sess_name)
-                    clean = _strip_ansi(content)
-                    clean_lines = clean.strip().splitlines()[-3:] if clean.strip() else []
-                except Exception:
-                    clean_lines = []
-                result.append({
+                entries.append({
                     "name": remote_key,
                     "node": node.name,
                     "state": "active",
                     "idle_seconds": 0,
                     "is_current": False,
                     "managed": False,
-                    "last_lines": clean_lines,
-                    "last_line": clean_lines[-1][:80] if clean_lines else "",
+                    "last_lines": [],
+                    "last_line": "",
                 })
         except Exception:
-            continue
+            pass
+        return entries
+
+    # Fetch all remote nodes in parallel
+    remote_tasks = [_fetch_remote_sessions(n) for n in node_registry.remote_nodes()]
+    if remote_tasks:
+        remote_results = await asyncio.gather(*remote_tasks, return_exceptions=True)
+        for r in remote_results:
+            if isinstance(r, list):
+                result.extend(r)
 
     return sorted(result, key=lambda s: s["name"])
 
 
-async def _remote_dump_pane_web(node, session: str) -> str:
-    """Dump pane content from a remote node."""
+async def _remote_dump_pane_web(node, session: str, cols: int = 80, rows: int = 24) -> str:
+    """Dump pane content from a remote node.
+
+    Strategy: try pyte-based rendering first (full ANSI color from log files),
+    fall back to plain dump-screen if logs unavailable.
+    """
     import shlex
     safe_session = shlex.quote(session)
-    cmd = (
+    py_session = repr(session)
+
+    # Primary: pyte-based rendering — full ANSI color from log files
+    cmd_pyte = (
+        f"python3 -c \""
+        f"import asyncio; from zpilot.zellij import dump_screen_rendered; "
+        f"print(asyncio.run(dump_screen_rendered({py_session}, cols={cols}, rows={rows})), end='')"
+        f"\""
+    )
+    result = await node.transport.exec(cmd_pyte, timeout=15)
+    if result.ok and result.stdout and result.stdout.strip():
+        return result.stdout
+
+    # Fallback: zellij dump-screen (plain text, no color)
+    cmd_dump = (
         f"TMP=$(mktemp) && "
         f"zellij --session {safe_session} action dump-screen $TMP && "
         f"cat $TMP && rm -f $TMP"
     )
-    result = await node.transport.exec(cmd, timeout=15, force_pty=True)
-    return result.stdout if result.ok else ""
+    result = await node.transport.exec(cmd_dump, timeout=10)
+    if result.ok and result.stdout:
+        return result.stdout
+    return ""
 
 
 CERT_DIR = __import__("pathlib").Path("/tmp/zpilot")

@@ -416,6 +416,11 @@ async def dump_screen_rendered(
         if logs:
             raw = logs[0].read_bytes().decode("utf-8", errors="replace")
     if not raw:
+        # Fallback: check for {session}.log (non-pane log files)
+        log_file = LOG_DIR / f"{session}.log"
+        if log_file.exists() and log_file.stat().st_size > 0:
+            raw = log_file.read_bytes().decode("utf-8", errors="replace")
+    if not raw:
         return ""
 
     # Only feed the tail of the log to keep rendering fast.

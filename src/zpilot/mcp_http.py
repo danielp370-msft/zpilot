@@ -8,6 +8,7 @@ Each node runs its own zpilot HTTP server, exposing:
   - /api/download     — download a file from this node
   - /api/siblings     — list known peer nodes (mesh discovery + health)
   - /api/proxy/{node} — forward a tool call to a sibling node
+  - /api/relay/{node}/{path} — generic HTTP relay for mesh routing
   - /api/fleet-health — health status of all known nodes
   - /api/sessions              — list local sessions (mesh discovery)
   - /api/peers                 — list directly-reachable peers
@@ -394,6 +395,47 @@ def create_http_app(config: ZpilotConfig | None = None) -> FastAPI:
 
         return result
 
+    # ── Generic HTTP relay for mesh routing ──
+
+    @app.api_route(
+        "/api/relay/{node_name}/{path:path}",
+        methods=["GET", "POST", "PUT", "DELETE"],
+    )
+    async def api_relay(node_name: str, path: str, request: Request):
+        """Relay an API request to a peer node.
+
+        Enables multi-hop mesh routing: if A can reach B and B can reach C,
+        A can call B's /api/relay/C/api/sessions to get C's sessions.
+        The path is forwarded as-is to the target node's API.
+        """
+        node = node_registry.get(node_name)
+        if not node:
+            return JSONResponse(
+                {"error": f"Unknown node: {node_name}"}, status_code=404
+            )
+
+        target_path = f"/{path}"
+        if request.url.query:
+            target_path += f"?{request.url.query}"
+
+        try:
+            if request.method == "GET":
+                result = await node.transport.api_get(target_path, timeout=15.0)
+            else:
+                try:
+                    body = await request.json()
+                except Exception:
+                    body = {}
+                result = await node.transport.api_post(
+                    target_path, json=body, timeout=15.0
+                )
+            return result
+        except (NotImplementedError, ConnectionError) as exc:
+            return JSONResponse(
+                {"error": f"Cannot reach {node_name}: {exc}"},
+                status_code=502,
+            )
+
     @app.get("/api/fleet-health")
     async def fleet_health():
         """Return health status of all known nodes."""
@@ -599,19 +641,12 @@ def create_http_app(config: ZpilotConfig | None = None) -> FastAPI:
     async def api_session_keys(name: str, request: Request):
         """Send special keys to a local session. Symmetric endpoint."""
         import shlex
+        from zpilot.keys import map_key_to_zellij
+
         keys = await request.json()  # expects a JSON array of key names
         safe_name = shlex.quote(name)
-        key_map = {
-            "enter": "10", "tab": "9", "escape": "27",
-            "backspace": "8", "ctrl_c": "3", "ctrl_d": "4",
-            "ctrl_z": "26", "ctrl_l": "12", "ctrl_a": "1",
-            "ctrl_e": "5", "ctrl_r": "18", "ctrl_u": "21",
-            "ctrl_w": "23", "arrow_up": "27 91 65",
-            "arrow_down": "27 91 66", "arrow_left": "27 91 68",
-            "arrow_right": "27 91 67",
-        }
         for key_name in keys:
-            zj_key = key_map.get(key_name.lower())
+            zj_key = map_key_to_zellij(key_name)
             if zj_key:
                 cmd = f"zellij --session {safe_name} action write {zj_key}"
                 proc = await asyncio.create_subprocess_shell(

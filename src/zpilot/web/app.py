@@ -99,6 +99,41 @@ async def api_events(count: int = 30):
     return [e.to_dict() for e in events]
 
 
+@app.api_route(
+    "/api/relay/{node_name}/{path:path}",
+    methods=["GET", "POST", "PUT", "DELETE"],
+)
+async def api_relay(node_name: str, path: str, request: Request):
+    """Relay an API request to a peer node for mesh routing."""
+    from starlette.responses import JSONResponse as JR
+
+    node = node_registry.get(node_name)
+    if not node:
+        return JR({"error": f"Unknown node: {node_name}"}, status_code=404)
+
+    target_path = f"/{path}"
+    if request.url.query:
+        target_path += f"?{request.url.query}"
+
+    try:
+        if request.method == "GET":
+            result = await node.transport.api_get(target_path, timeout=15.0)
+        else:
+            try:
+                body = await request.json()
+            except Exception:
+                body = {}
+            result = await node.transport.api_post(
+                target_path, json=body, timeout=15.0
+            )
+        return result
+    except (NotImplementedError, ConnectionError) as exc:
+        return JR(
+            {"error": f"Cannot reach {node_name}: {exc}"},
+            status_code=502,
+        )
+
+
 @app.get("/api/nodes")
 async def api_nodes():
     """JSON API: list configured nodes and connectivity."""
@@ -500,30 +535,7 @@ async def _remote_resize_pane(node, session: str, cols: int, rows: int):
 
 
 # Key name → zellij byte value mapping
-_KEY_MAP = {
-    "enter": "10",
-    "tab": "9",
-    "escape": "27",
-    "backspace": "127",
-    "arrow_up": "27 91 65",
-    "arrow_down": "27 91 66",
-    "arrow_right": "27 91 67",
-    "arrow_left": "27 91 68",
-    "ctrl_c": "3",
-    "ctrl_d": "4",
-    "ctrl_z": "26",
-    "ctrl_l": "12",
-    "ctrl_a": "1",
-    "ctrl_e": "5",
-    "ctrl_r": "18",
-    "ctrl_u": "21",
-    "ctrl_w": "23",
-}
-
-
-def _map_key_to_zellij(key: str):
-    """Map a key name to zellij 'action write' byte values."""
-    return _KEY_MAP.get(key.lower())
+from zpilot.keys import map_key_to_zellij as _map_key_to_zellij
 
 def _strip_ansi(text: str) -> str:
     """Strip ANSI escape codes and control characters from text.

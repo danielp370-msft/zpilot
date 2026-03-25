@@ -480,11 +480,18 @@ async def dump_screen_rendered(
 
         lines.append("".join(line_parts))
 
-    # Trim trailing blank lines
-    while lines and not lines[-1]:
-        lines.pop()
+    # Keep all rows — trailing blank lines represent the actual terminal
+    # geometry.  Stripping them causes content to cluster at the top when
+    # the web UI clears the screen and writes from home position.
 
-    return "\n".join(lines)
+    # Append cursor positioning so xterm.js places the cursor correctly
+    cursor_row = screen.cursor.y
+    cursor_col = screen.cursor.x
+    result = "\n".join(lines)
+    # ANSI cursor position is 1-based: \x1b[row;colH
+    result += f"\x1b[{cursor_row + 1};{cursor_col + 1}H"
+
+    return result
 
 
 # ── ANSI color helpers for pyte buffer ──────────────────────────

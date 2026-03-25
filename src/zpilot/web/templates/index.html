@@ -293,6 +293,10 @@
             overflow: hidden; text-overflow: ellipsis;
         }
         .dock-pill .pill-eye { font-size: 10px; }
+        .dock-pill .pill-node {
+            opacity: 0.6; font-size: 10px; margin-right: 1px;
+            color: var(--cyan, #66d9ef);
+        }
 
         /* Status dot colors */
         .dot-idle { background: var(--green); }
@@ -434,6 +438,11 @@
         }
         .card-unmanaged-tag {
             font-size: 10px; color: var(--orange);
+        }
+        .card-node-tag {
+            font-size: 9px; padding: 1px 5px; border-radius: 3px;
+            background: var(--cyan, #66d9ef); color: #000; font-weight: bold;
+            margin-right: 4px;
         }
 
         /* ── SETTINGS DROPDOWN ──────────────────── */
@@ -806,7 +815,8 @@
                 pill.dataset.session = s.name;
 
                 pill.innerHTML = `<span class="pill-dot ${dotClass(s.state)}"></span>` +
-                    `<span class="pill-name">${esc(s.name)}</span>` +
+                    (s.node && s.node !== 'local' ? `<span class="pill-node">${esc(s.node)}:</span>` : '') +
+                    `<span class="pill-name">${esc(s.node && s.node !== 'local' ? s.name.split(':').slice(1).join(':') : s.name)}</span>` +
                     (!s.managed ? '<span class="pill-eye">👁</span>' : '');
 
                 pill.onclick = () => focusSession(s.name);
@@ -883,12 +893,14 @@
             const s = sessionsData[primary];
             if (s) {
                 document.getElementById('fh-dot').className = 'fh-dot ' + dotClass(s.state);
-                document.getElementById('fh-name').textContent = s.name;
+                const isRemote = s.node && s.node !== 'local';
+                const displayName = isRemote ? s.name.split(':').slice(1).join(':') : s.name;
+                document.getElementById('fh-name').textContent = (isRemote ? s.node + ':' : '') + displayName;
                 document.getElementById('fh-state').textContent = s.state || 'unknown';
                 document.getElementById('fh-idle').textContent = 'idle ' + formatIdle(s.idle_seconds);
                 const unm = document.getElementById('fh-unmanaged');
                 unm.style.display = s.managed ? 'none' : '';
-                topSession.textContent = s.name;
+                topSession.textContent = (isRemote ? s.node + ':' : '') + displayName;
             }
 
             const showSplit = splitMode && focusedSessions.length >= 2;
@@ -986,9 +998,12 @@
             });
             grid.innerHTML = sorted.map(s => {
                 const isError = s.state === 'error';
+                const isRemote = s.node && s.node !== 'local';
+                const displayName = isRemote ? s.name.split(':').slice(1).join(':') : s.name;
                 return `<div class="expose-card ${isError ? 'card-error' : ''}" onclick="focusSession('${esc(s.name)}')" data-session="${esc(s.name)}">
                     <div class="card-top">
-                        <span class="card-name">${esc(s.name)}</span>
+                        ${isRemote ? `<span class="card-node-tag">${esc(s.node)}</span>` : ''}
+                        <span class="card-name">${esc(displayName)}</span>
                         <span class="card-badge ${badgeClass(s.state)}">${s.state || 'unknown'}</span>
                     </div>
                     <div class="card-preview">${esc(s.last_line || s.last_lines?.[s.last_lines?.length-1] || '')}</div>

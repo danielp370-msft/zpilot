@@ -17,6 +17,7 @@ from ..config import load_config
 from ..detector import PaneDetector
 from ..events import EventBus
 from ..models import PaneState
+from ..nodes import NodeRegistry, load_nodes
 
 app = FastAPI(title="zpilot", description="Mission Control for AI Coding Sessions")
 
@@ -29,6 +30,7 @@ app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 config = load_config()
 detector = PaneDetector(config)
 event_bus = EventBus(config.events_file)
+node_registry = NodeRegistry(load_nodes())
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -56,9 +58,40 @@ async def api_events(count: int = 30):
     return [e.to_dict() for e in events]
 
 
-@app.get("/api/pane/{session_name}")
+@app.get("/api/nodes")
+async def api_nodes():
+    """JSON API: list configured nodes and connectivity."""
+    result = []
+    for node in node_registry.all():
+        info = {"name": node.name, "transport": node.transport_type, "is_local": node.is_local}
+        if not node.is_local:
+            try:
+                res = await node.transport.exec("echo ok", timeout=5)
+                info["reachable"] = res.ok
+            except Exception:
+                info["reachable"] = False
+        else:
+            info["reachable"] = True
+        result.append(info)
+    return result
+
+
+@app.get("/api/pane/{session_name:path}")
 async def api_pane_content(session_name: str, pane_name: str = "main", lines: int = 50):
-    """JSON API: pane content."""
+    """JSON API: pane content. Supports node:session format for remote nodes."""
+    node, local_session = _parse_node_session(session_name)
+    if node:
+        content = await _remote_dump_pane_web(node, local_session)
+        clean = _strip_ansi(content)
+        return {
+            "session": session_name,
+            "pane": pane_name,
+            "node": node.name,
+            "state": "active",
+            "idle_seconds": 0,
+            "content": clean,
+            "lines": clean.strip().splitlines()[-lines:] if clean.strip() else [],
+        }
     content = await zellij.dump_pane(session=session_name, pane_name=pane_name, tail_lines=lines)
     clean = _strip_ansi(content)
     state = detector.detect(session_name, "main", clean)
@@ -102,18 +135,42 @@ async def api_adopt_session(name: str):
     }
 
 
-@app.post("/api/session/{name}/send")
+@app.post("/api/session/{name:path}/send")
 async def api_send_to_session(name: str, text: str = Form(...)):
-    """Send text to a session's focused pane."""
+    """Send text to a session's focused pane. Supports node:session format."""
+    node, local_session = _parse_node_session(name)
+    if node:
+        import shlex
+        safe_text = shlex.quote(text)
+        safe_session = shlex.quote(local_session)
+        cmd = f"zellij --session {safe_session} action write-chars {safe_text}"
+        await node.transport.exec(cmd, timeout=10, force_pty=True)
+        enter_cmd = f"zellij --session {safe_session} action write 10"
+        await node.transport.exec(enter_cmd, timeout=10, force_pty=True)
+        return {"status": "sent", "session": name, "text": text}
     await zellij.write_to_pane(text, session=name)
     await zellij.send_enter(session=name)
     detector.record_input(name, "main")
     return {"status": "sent", "session": name, "text": text}
 
 
-@app.post("/api/session/{name}/keys")
+@app.post("/api/session/{name:path}/keys")
 async def api_send_keys(name: str, keys: list[str]):
-    """Send special keys to a session."""
+    """Send special keys to a session. Supports node:session format."""
+    node, local_session = _parse_node_session(name)
+    if node:
+        import shlex
+        safe_session = shlex.quote(local_session)
+        results = []
+        for key in keys:
+            zj_key = _map_key_to_zellij(key)
+            if zj_key is not None:
+                cmd = f"zellij --session {safe_session} action write {zj_key}"
+                await node.transport.exec(cmd, timeout=10, force_pty=True)
+                results.append({"key": key, "sent": True})
+            else:
+                results.append({"key": key, "sent": False})
+        return {"status": "sent", "session": name, "results": results}
     results = []
     for key in keys:
         ok = await zellij.send_special_key(key, session=name)
@@ -122,28 +179,40 @@ async def api_send_keys(name: str, keys: list[str]):
     return {"status": "sent", "session": name, "results": results}
 
 
-@app.get("/api/pane/{session_name}/raw")
+@app.get("/api/pane/{session_name:path}/raw")
 async def api_pane_raw(session_name: str, pane_name: str = "main", lines: int = 80):
-    """Raw pane content with ANSI codes preserved (for xterm.js)."""
+    """Raw pane content with ANSI codes preserved (for xterm.js). Supports node:session."""
+    node, local_session = _parse_node_session(session_name)
+    if node:
+        content = await _remote_dump_pane_web(node, local_session)
+        return {"session": session_name, "content": content}
     content = await zellij.dump_pane(session=session_name, pane_name=pane_name, tail_lines=lines)
     return {"session": session_name, "content": content}
 
 
-@app.websocket("/ws/terminal/{session_name}")
+@app.websocket("/ws/terminal/{session_name:path}")
 async def ws_terminal(websocket: WebSocket, session_name: str):
-    """WebSocket for real-time terminal I/O.
+    """WebSocket for real-time terminal I/O. Supports node:session format.
 
     Server → Client: raw terminal output (ANSI preserved)
     Client → Server: keystrokes (raw text or JSON {type: 'key', key: 'arrow_up'})
     """
+    node, local_session = _parse_node_session(session_name)
     await websocket.accept()
     last_hash = ""
     last_full_content = ""
     is_focused = True  # assume focused on connect
+    ws_cols = 80  # track client terminal dimensions
+    ws_rows = 24
 
     try:
-        # Send initial content (pyte renders log → clean screen state)
-        content = await zellij.dump_screen_rendered(session_name, pane_name="main")
+        # Send initial content
+        if node:
+            content = await _remote_dump_pane_web(node, local_session)
+        else:
+            content = await zellij.dump_screen_rendered(
+                session_name, pane_name="main", cols=ws_cols, rows=ws_rows
+            )
         if content:
             normalized = _normalize_for_xterm(content)
             await websocket.send_json({"type": "output", "data": normalized})
@@ -153,12 +222,19 @@ async def ws_terminal(websocket: WebSocket, session_name: str):
 
         async def send_updates():
             """Poll for terminal changes and push to client."""
-            nonlocal last_hash, last_full_content, is_focused
+            nonlocal last_hash, last_full_content, is_focused, ws_cols, ws_rows
             while True:
-                await asyncio.sleep(0.1 if is_focused else 1.0)
+                # Remote polling is slower (network latency)
+                interval = 0.5 if node else (0.1 if is_focused else 1.0)
+                await asyncio.sleep(interval)
                 try:
-                    # Pyte renders raw log → clean screen (no readline artifacts)
-                    content = await zellij.dump_screen_rendered(session_name, pane_name="main")
+                    if node:
+                        content = await _remote_dump_pane_web(node, local_session)
+                    else:
+                        content = await zellij.dump_screen_rendered(
+                            session_name, pane_name="main",
+                            cols=ws_cols, rows=ws_rows,
+                        )
                     if not content:
                         if last_full_content:
                             await websocket.send_json({"type": "output", "data": ""})
@@ -168,16 +244,13 @@ async def ws_terminal(websocket: WebSocket, session_name: str):
                     import hashlib
                     h = hashlib.md5(content.encode()).hexdigest()
                     if h != last_hash:
-                        # Always send full screen state — pyte renders
-                        # a complete snapshot each time, so append/delta
-                        # optimizations break cursor positioning.
                         normalized = _normalize_for_xterm(content)
                         await websocket.send_json({"type": "output", "data": normalized})
                         last_hash = h
                         last_full_content = content
-                        # Update detector with fresh content
-                        clean = _strip_ansi(content)
-                        detector.detect(session_name, "main", clean)
+                        if not node:
+                            clean = _strip_ansi(content)
+                            detector.detect(session_name, "main", clean)
                 except (WebSocketDisconnect, RuntimeError):
                     break
                 except Exception as exc:
@@ -185,7 +258,7 @@ async def ws_terminal(websocket: WebSocket, session_name: str):
                     logging.getLogger("zpilot.web").warning(
                         "send_updates error for %s: %s", session_name, exc
                     )
-                    await asyncio.sleep(1)  # back off on errors
+                    await asyncio.sleep(2 if node else 1)
 
         # Run output streaming in background
         output_task = asyncio.create_task(send_updates())
@@ -196,28 +269,38 @@ async def ws_terminal(websocket: WebSocket, session_name: str):
                 try:
                     data = json.loads(msg)
                     if data.get("type") == "key":
-                        # Named special key
-                        await zellij.send_special_key(data["key"], session=session_name)
+                        if node:
+                            await _remote_send_key(node, local_session, data["key"])
+                        else:
+                            await zellij.send_special_key(data["key"], session=session_name)
                     elif data.get("type") == "resize":
-                        cols = data.get("cols", 80)
-                        rows = data.get("rows", 24)
-                        await zellij.resize_pane(cols, rows, session=session_name)
+                        ws_cols = data.get("cols", 80)
+                        ws_rows = data.get("rows", 24)
+                        if not node:
+                            await zellij.resize_pane(ws_cols, ws_rows, session=session_name)
+                        # Force refresh so pyte re-renders at new size
+                        last_hash = ""
+                        last_full_content = ""
                     elif data.get("type") == "focus":
                         is_focused = data.get("visible", True)
                     elif data.get("type") == "refresh":
-                        # Force full content resend on next poll
                         last_hash = ""
                         last_full_content = ""
                     else:
-                        # Raw terminal input (may contain control chars)
                         text = data.get("data", "")
                         if text:
-                            await zellij.write_raw_input(text, session=session_name)
+                            if node:
+                                await _remote_write_chars(node, local_session, text)
+                            else:
+                                await zellij.write_raw_input(text, session=session_name)
                 except (json.JSONDecodeError, KeyError):
-                    # Plain text — send directly as raw input
                     if msg:
-                        await zellij.write_raw_input(msg, session=session_name)
-                detector.record_input(session_name, "main")
+                        if node:
+                            await _remote_write_chars(node, local_session, msg)
+                        else:
+                            await zellij.write_raw_input(msg, session=session_name)
+                if not node:
+                    detector.record_input(session_name, "main")
         finally:
             output_task.cancel()
 
@@ -228,6 +311,65 @@ async def ws_terminal(websocket: WebSocket, session_name: str):
 
 
 import re as _re
+
+
+def _parse_node_session(name: str):
+    """Parse 'node:session' format. Returns (Node, session_name) or (None, name)."""
+    if ":" in name:
+        node_name, session = name.split(":", 1)
+        try:
+            node = node_registry.get(node_name)
+            if not node.is_local:
+                return node, session
+        except KeyError:
+            pass
+    return None, name
+
+
+async def _remote_send_key(node, session: str, key: str):
+    """Send a special key to a remote session."""
+    import shlex
+    safe_session = shlex.quote(session)
+    zj_key = _map_key_to_zellij(key)
+    if zj_key is not None:
+        cmd = f"zellij --session {safe_session} action write {zj_key}"
+        await node.transport.exec(cmd, timeout=10, force_pty=True)
+
+
+async def _remote_write_chars(node, session: str, text: str):
+    """Write raw text to a remote session."""
+    import shlex
+    safe_session = shlex.quote(session)
+    safe_text = shlex.quote(text)
+    cmd = f"zellij --session {safe_session} action write-chars {safe_text}"
+    await node.transport.exec(cmd, timeout=10, force_pty=True)
+
+
+# Key name → zellij byte value mapping
+_KEY_MAP = {
+    "enter": "10",
+    "tab": "9",
+    "escape": "27",
+    "backspace": "127",
+    "arrow_up": "27 91 65",
+    "arrow_down": "27 91 66",
+    "arrow_right": "27 91 67",
+    "arrow_left": "27 91 68",
+    "ctrl_c": "3",
+    "ctrl_d": "4",
+    "ctrl_z": "26",
+    "ctrl_l": "12",
+    "ctrl_a": "1",
+    "ctrl_e": "5",
+    "ctrl_r": "18",
+    "ctrl_u": "21",
+    "ctrl_w": "23",
+}
+
+
+def _map_key_to_zellij(key: str):
+    """Map a key name to zellij 'action write' byte values."""
+    return _KEY_MAP.get(key.lower())
 
 def _strip_ansi(text: str) -> str:
     """Strip ANSI escape codes and control characters from text.
@@ -291,10 +433,10 @@ def _normalize_for_xterm(text: str) -> str:
     # Normalize \r\n to \n for consistent handling, but preserve bare \r
     # (xterm.js uses \r correctly as carriage return to column 0)
     text = text.replace('\r\n', '\n')
-    # Collapse excessive blank lines (3+ newlines → 2, preserving single blank lines)
-    text = _re.sub(r'\n{3,}', '\n\n', text)
-    # Strip trailing blank lines before final prompt
-    text = _re.sub(r'\n{2,}$', '\n', text)
+    # NOTE: We no longer collapse blank lines or strip trailing blanks.
+    # dump_screen_rendered() returns the full terminal geometry (all rows),
+    # and blank lines represent real screen positions.  Stripping them causes
+    # content to cluster at the top of the web terminal viewport.
     # Convert \n to \r\n for xterm.js (needs CR to return to column 0)
     text = text.replace('\n', '\r\n')
     return text
@@ -382,24 +524,25 @@ async def event_stream():
 
 
 async def _get_session_data() -> list[dict]:
-    """Get session status data."""
+    """Get session status data, including remote nodes."""
+    result = []
+
+    # ── Local sessions ──
     try:
         sessions = await zellij.list_sessions()
     except Exception:
-        return []
+        sessions = []
 
-    result = []
     for s in sessions:
         try:
-            # Try to read any named pane log
             content = await zellij.dump_pane(session=s.name)
             clean = _strip_ansi(content)
-            # Use "main" as pane key to match /api/pane default
             state = detector.detect(s.name, "main", clean)
             idle = detector.get_idle_seconds(s.name, "main")
             clean_lines = clean.strip().splitlines()[-3:] if clean.strip() else []
             result.append({
                 "name": s.name,
+                "node": "local",
                 "state": state.value,
                 "idle_seconds": round(idle, 1),
                 "is_current": s.is_current,
@@ -410,6 +553,7 @@ async def _get_session_data() -> list[dict]:
         except Exception as e:
             result.append({
                 "name": s.name,
+                "node": "local",
                 "state": "unknown",
                 "idle_seconds": 0,
                 "is_current": s.is_current,
@@ -417,7 +561,54 @@ async def _get_session_data() -> list[dict]:
                 "last_lines": [],
                 "last_line": f"error: {e}",
             })
+
+    # ── Remote node sessions ──
+    for node in node_registry.remote_nodes():
+        try:
+            res = await node.transport.exec(
+                "zellij list-sessions --no-formatting 2>/dev/null", timeout=10.0
+            )
+            if not res.ok or not res.stdout.strip():
+                continue
+            for line in res.stdout.strip().splitlines():
+                sess_name = line.strip().split()[0] if line.strip() else ""
+                if not sess_name:
+                    continue
+                # Fetch a few lines of content for preview
+                remote_key = f"{node.name}:{sess_name}"
+                try:
+                    content = await _remote_dump_pane_web(node, sess_name)
+                    clean = _strip_ansi(content)
+                    clean_lines = clean.strip().splitlines()[-3:] if clean.strip() else []
+                except Exception:
+                    clean_lines = []
+                result.append({
+                    "name": remote_key,
+                    "node": node.name,
+                    "state": "active",
+                    "idle_seconds": 0,
+                    "is_current": False,
+                    "managed": False,
+                    "last_lines": clean_lines,
+                    "last_line": clean_lines[-1][:80] if clean_lines else "",
+                })
+        except Exception:
+            continue
+
     return sorted(result, key=lambda s: s["name"])
+
+
+async def _remote_dump_pane_web(node, session: str) -> str:
+    """Dump pane content from a remote node."""
+    import shlex
+    safe_session = shlex.quote(session)
+    cmd = (
+        f"TMP=$(mktemp) && "
+        f"zellij --session {safe_session} action dump-screen $TMP && "
+        f"cat $TMP && rm -f $TMP"
+    )
+    result = await node.transport.exec(cmd, timeout=15, force_pty=True)
+    return result.stdout if result.ok else ""
 
 
 CERT_DIR = __import__("pathlib").Path("/tmp/zpilot")

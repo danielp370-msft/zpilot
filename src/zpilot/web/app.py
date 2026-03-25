@@ -778,14 +778,28 @@ async def _get_session_data() -> list[dict]:
 async def _remote_dump_pane_web(node, session: str, cols: int = 80, rows: int = 24) -> str:
     """Dump pane content from a remote node.
 
-    Strategy: try pyte-based rendering first (full ANSI color from log files),
-    fall back to plain dump-screen if logs unavailable.
+    Strategy: try symmetric API first (/api/session/{name}/screen),
+    fall back to exec-based pyte rendering, then plain dump-screen.
     """
     import shlex
+
+    # Primary: symmetric API call to peer
+    try:
+        data = await node.transport.api_get(
+            f"/api/session/{session}/screen?cols={cols}&rows={rows}",
+            timeout=15.0,
+        )
+        content = data.get("content", "")
+        if content and content.strip():
+            return content
+    except (NotImplementedError, ConnectionError):
+        pass
+
+    # Fallback: exec-based approaches
     safe_session = shlex.quote(session)
     py_session = repr(session)
 
-    # Primary: pyte-based rendering — full ANSI color from log files
+    # Pyte-based rendering via exec
     cmd_pyte = (
         f"python3 -c \""
         f"import asyncio; from zpilot.zellij import dump_screen_rendered; "
@@ -796,7 +810,7 @@ async def _remote_dump_pane_web(node, session: str, cols: int = 80, rows: int = 
     if result.ok and result.stdout and result.stdout.strip():
         return result.stdout
 
-    # Fallback: zellij dump-screen (plain text, no color)
+    # Plain zellij dump-screen
     cmd_dump = (
         f"TMP=$(mktemp) && "
         f"zellij --session {safe_session} action dump-screen $TMP && "

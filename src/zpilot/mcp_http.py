@@ -11,6 +11,7 @@ Each node runs its own zpilot HTTP server, exposing:
   - /api/fleet-health — health status of all known nodes
   - /api/sessions              — list local sessions (mesh discovery)
   - /api/peers                 — list directly-reachable peers
+  - /api/session/{name}/screen — get rendered screen content
   - /api/session/{name}/resize — resize a local session's terminal
   - /api/session/{name}/send   — send text + enter to a local session
   - /api/session/{name}/keys   — send special keys to a local session
@@ -620,6 +621,60 @@ def create_http_app(config: ZpilotConfig | None = None) -> FastAPI:
                 )
                 await proc.communicate()
         return {"status": "keys_sent", "session": name, "count": len(keys)}
+
+    # ── Screen content (rendered) ──
+
+    @app.get("/api/session/{name}/screen")
+    async def session_screen(name: str, cols: int = 80, rows: int = 24):
+        """Get rendered screen content for a session.
+
+        Returns ANSI-colored terminal output via pyte rendering,
+        with fallback to plain zellij dump-screen.
+        """
+        import shlex
+
+        safe_name = shlex.quote(name)
+
+        # Primary: pyte-based rendering (ANSI color from log files)
+        try:
+            from zpilot.zellij import dump_screen_rendered
+
+            content = await dump_screen_rendered(name, cols=cols, rows=rows)
+            if content and content.strip():
+                return {"session": name, "content": content, "method": "pyte"}
+        except Exception:
+            pass
+
+        # Fallback: zellij dump-screen (plain text)
+        try:
+            import tempfile
+
+            with tempfile.NamedTemporaryFile(
+                suffix=".txt", delete=False
+            ) as tmp:
+                tmp_path = tmp.name
+            cmd = (
+                f"zellij --session {safe_name} action dump-screen {tmp_path}"
+            )
+            proc = await asyncio.create_subprocess_shell(
+                cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            await proc.communicate()
+            import os
+
+            content = ""
+            if os.path.exists(tmp_path):
+                with open(tmp_path) as f:
+                    content = f.read()
+                os.unlink(tmp_path)
+            if content:
+                return {"session": name, "content": content, "method": "dump"}
+        except Exception:
+            pass
+
+        return {"session": name, "content": "", "method": "none"}
 
     return app
 

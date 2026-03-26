@@ -601,6 +601,14 @@ def create_http_app(config: ZpilotConfig | None = None) -> FastAPI:
             if not name or name in seen:
                 continue
             has_fifo = os.path.exists(os.path.join(fifo_dir, f"{name}.fifo"))
+            alive = False
+            if has_fifo:
+                try:
+                    fd = os.open(os.path.join(fifo_dir, f"{name}.fifo"), os.O_WRONLY | os.O_NONBLOCK)
+                    os.close(fd)
+                    alive = True
+                except OSError:
+                    alive = False
             last_lines: list[str] = []
             try:
                 with open(path, "rb") as f:
@@ -617,7 +625,7 @@ def create_http_app(config: ZpilotConfig | None = None) -> FastAPI:
                 "managed": True,
                 "last_lines": last_lines,
                 "last_line": last_lines[-1][:80] if last_lines else "",
-                "state": "active" if has_fifo else "exited",
+                "state": "active" if alive else "exited",
                 "pty_only": True,
             })
 

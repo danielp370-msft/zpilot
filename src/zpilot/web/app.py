@@ -942,8 +942,17 @@ def _discover_shell_wrapper_sessions(exclude: set[str] | None = None) -> list[di
         name = fname.rsplit("--main.log", 1)[0]
         if not name or name in exclude:
             continue
-        # Check if session is still alive (FIFO exists = process running)
-        has_fifo = os.path.exists(os.path.join(fifo_dir, f"{name}.fifo"))
+        # Check if session is still alive: FIFO exists AND a process has it open
+        fifo_path = os.path.join(fifo_dir, f"{name}.fifo")
+        alive = False
+        if os.path.exists(fifo_path):
+            try:
+                # Try opening FIFO non-blocking; if no reader, it's dead
+                fd = os.open(fifo_path, os.O_WRONLY | os.O_NONBLOCK)
+                os.close(fd)
+                alive = True
+            except OSError:
+                alive = False
         # Read last few lines for preview
         last_lines: list[str] = []
         try:
@@ -959,7 +968,7 @@ def _discover_shell_wrapper_sessions(exclude: set[str] | None = None) -> list[di
         entries.append({
             "name": name,
             "node": "local",
-            "state": "active" if has_fifo else "exited",
+            "state": "active" if alive else "exited",
             "idle_seconds": 0,
             "is_current": False,
             "managed": True,  # shell_wrapper sessions are always managed

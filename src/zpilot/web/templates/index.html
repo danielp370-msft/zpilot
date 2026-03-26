@@ -130,6 +130,23 @@
             background: var(--red); flex-shrink: 0;
         }
         .sse-dot.live { background: var(--green); }
+        .disconnect-overlay {
+            display: none; position: fixed; inset: 0; z-index: 9999;
+            background: rgba(0,0,0,0.7);
+            align-items: center; justify-content: center; flex-direction: column;
+        }
+        .disconnect-overlay.visible { display: flex; }
+        .disconnect-overlay .disco-icon { font-size: 3rem; margin-bottom: 12px; }
+        .disconnect-overlay .disco-title {
+            color: #ccc; font-size: 1.3rem; font-family: monospace;
+            letter-spacing: 0.15em; margin-bottom: 8px;
+        }
+        .disconnect-overlay .disco-sub {
+            color: #888; font-size: 0.85rem; font-family: monospace;
+        }
+        .disconnect-overlay .disco-retry {
+            color: #666; font-size: 0.75rem; font-family: monospace; margin-top: 16px;
+        }
         .tb-btn {
             background: none; border: 1px solid transparent;
             color: var(--text-dim); padding: 3px 7px; border-radius: 4px;
@@ -202,6 +219,19 @@
             background: var(--scanline); pointer-events: none; z-index: 1;
         }
         .term-body .xterm { height: 100%; }
+        .exited-overlay {
+            position: absolute; inset: 0; z-index: 10;
+            display: flex; align-items: center; justify-content: center;
+            background: rgba(0,0,0,0.55);
+            pointer-events: none;
+        }
+        .exited-overlay::after {
+            content: attr(data-text);
+        }
+        .exited-overlay {
+            color: #888; font-size: 1.4rem; font-family: monospace;
+            letter-spacing: 0.3em; text-transform: uppercase;
+        }
         .term-body.scale-mode {
             display: flex; align-items: center; justify-content: center;
             overflow: hidden;
@@ -823,11 +853,13 @@
                 if (attentionSet.has(s.name)) pill.classList.add('attention');
                 pill.dataset.session = s.name;
 
-                pill.innerHTML = `<span class="pill-dot ${dotClass(s.state)}"></span>` +
+                const dotOrClose = s.state === 'exited'
+                    ? `<span class="pill-close" title="Dismiss">✕</span>`
+                    : `<span class="pill-dot ${dotClass(s.state)}"></span>`;
+                pill.innerHTML = dotOrClose +
                     (s.node && s.node !== 'local' ? `<span class="pill-node">${esc(s.node)}:</span>` : '') +
                     `<span class="pill-name">${esc(s.node && s.node !== 'local' ? s.name.split(':').slice(1).join(':') : s.name)}</span>` +
-                    (!s.managed ? '<span class="pill-eye">👁</span>' : '') +
-                    (s.state === 'exited' ? '<span class="pill-close" title="Dismiss">✕</span>' : '');
+                    (!s.managed ? '<span class="pill-eye">👁</span>' : '');
 
                 pill.onclick = (e) => {
                     if (e.target.classList.contains('pill-close')) {
@@ -963,10 +995,26 @@
                     term.options.cursorBlink = false;
                     term.options.cursorStyle = 'bar';
                     term.options.cursorInactiveStyle = 'none';
-                    term.write('\r\n\x1b[2m── session exited ──\x1b[0m');
+                    // Still connect WS to show last content (catch-up), but read-only
+                    connectTerminalWS(name);
+                    // Overlay "EXITED" banner centered on the terminal
+                    setTimeout(() => {
+                        const body = el.closest('.term-body') || el;
+                        if (!body.querySelector('.exited-overlay')) {
+                            const ov = document.createElement('div');
+                            ov.className = 'exited-overlay';
+                            ov.textContent = 'SESSION EXITED';
+                            body.style.position = 'relative';
+                            body.appendChild(ov);
+                        }
+                    }, 300);
                 } else {
                     term.options.cursorBlink = true;
                     term.options.cursorStyle = 'block';
+                    // Remove overlay if session came back alive
+                    const body = el.closest('.term-body') || el;
+                    const ov = body.querySelector('.exited-overlay');
+                    if (ov) ov.remove();
                     connectTerminalWS(name);
                 }
             });
@@ -1425,6 +1473,7 @@
         // SSE CONNECTION
         // ══════════════════════════════════════════
         let sseRetryDelay = 1000;
+        let sseFailCount = 0;
         function connectSSE() {
             const src = new EventSource('/api/stream');
 
@@ -1480,15 +1529,25 @@
 
             src.onerror = () => {
                 src.close();
+                sseFailCount++;
                 document.getElementById('sse-dot').className = 'sse-dot';
-                document.getElementById('sse-label').textContent = 'Reconnecting…';
+                document.getElementById('sse-label').textContent = 'Disconnected';
+                // Show disconnect overlay after 2 consecutive failures (quick grace period)
+                if (sseFailCount >= 2) {
+                    document.getElementById('disconnect-overlay').classList.add('visible');
+                    const retryEl = document.getElementById('disco-retry');
+                    const nextSec = Math.round(sseRetryDelay / 1000);
+                    retryEl.textContent = `Retrying in ${nextSec}s…`;
+                }
                 setTimeout(connectSSE, sseRetryDelay);
                 sseRetryDelay = Math.min(sseRetryDelay * 2, 30000);
             };
 
             src.onopen = () => {
+                sseFailCount = 0;
                 document.getElementById('sse-dot').className = 'sse-dot live';
                 document.getElementById('sse-label').textContent = 'Live';
+                document.getElementById('disconnect-overlay').classList.remove('visible');
                 sseRetryDelay = 1000;
             };
         }
@@ -1589,5 +1648,11 @@
 
     })();
     </script>
+    <div class="disconnect-overlay" id="disconnect-overlay">
+        <span class="disco-icon">⚡</span>
+        <span class="disco-title">DISCONNECTED</span>
+        <span class="disco-sub">zpilot backend is unreachable</span>
+        <span class="disco-retry" id="disco-retry">Reconnecting…</span>
+    </div>
 </body>
 </html>

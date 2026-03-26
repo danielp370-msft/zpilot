@@ -762,6 +762,7 @@
         let exposeOpen = false;
         let attentionTimers = {};       // name → timeout id
         let attentionSet = new Set();   // names needing attention (sort left)
+        let dismissedSet = new Set();   // sessions user dismissed (hidden until they reappear alive)
         let ctxTarget = null;           // right-click target session name
 
         // Terminal state (exposed on window for debugging)
@@ -1184,6 +1185,7 @@
 
         // Dismiss exited session (remove from view, clean up files)
         async function dismissSession(name) {
+            dismissedSet.add(name);
             try {
                 await fetch(`/api/session/${encodeURIComponent(name)}`, { method: 'DELETE' });
             } catch(e) { /* ignore — might already be gone */ }
@@ -1474,21 +1476,40 @@
         // ══════════════════════════════════════════
         let sseRetryDelay = 1000;
         let sseFailCount = 0;
+        let lastSSEData = Date.now();
+        function showDisconnected(msg) {
+            document.getElementById('sse-dot').className = 'sse-dot';
+            document.getElementById('sse-label').textContent = 'Disconnected';
+            document.getElementById('disconnect-overlay').classList.add('visible');
+            document.getElementById('disco-retry').textContent = msg || 'Reconnecting…';
+        }
+        function showConnected() {
+            document.getElementById('sse-dot').className = 'sse-dot live';
+            document.getElementById('sse-label').textContent = 'Live';
+            document.getElementById('disconnect-overlay').classList.remove('visible');
+        }
         function connectSSE() {
             const src = new EventSource('/api/stream');
 
             src.addEventListener('status', (e) => {
-                lastSSEEvent = Date.now();
+                lastSSEData = Date.now();
                 const sessions = JSON.parse(e.data);
                 const oldStates = {};
                 sessionsList.forEach(s => oldStates[s.name] = s.state);
 
-                sessions.sort((a, b) => a.name.localeCompare(b.name));
-                sessionsList = sessions;
-                sessionsData = {};
+                // Un-dismiss sessions that came back alive; keep dismissed exited ones hidden
                 sessions.forEach(s => {
+                    if (dismissedSet.has(s.name) && s.state !== 'exited') {
+                        dismissedSet.delete(s.name);
+                    }
+                });
+                const visible = sessions.filter(s => !dismissedSet.has(s.name));
+
+                visible.sort((a, b) => a.name.localeCompare(b.name));
+                sessionsList = visible;
+                sessionsData = {};
+                visible.forEach(s => {
                     sessionsData[s.name] = s;
-                    // Trigger attention if state changed (and not currently focused)
                     if (oldStates[s.name] !== undefined && oldStates[s.name] !== s.state) {
                         if (!focusedSessions.includes(s.name)) {
                             triggerAttention(s.name);
@@ -1531,44 +1552,24 @@
             src.onerror = () => {
                 src.close();
                 sseFailCount++;
-                document.getElementById('sse-dot').className = 'sse-dot';
-                document.getElementById('sse-label').textContent = 'Disconnected';
-                // Show disconnect overlay after 2 consecutive failures (quick grace period)
-                if (sseFailCount >= 2) {
-                    document.getElementById('disconnect-overlay').classList.add('visible');
-                    const retryEl = document.getElementById('disco-retry');
-                    const nextSec = Math.round(sseRetryDelay / 1000);
-                    retryEl.textContent = `Retrying in ${nextSec}s…`;
-                }
+                const nextSec = Math.round(sseRetryDelay / 1000);
+                showDisconnected(`Retry ${sseFailCount} in ${nextSec}s…`);
                 setTimeout(connectSSE, sseRetryDelay);
                 sseRetryDelay = Math.min(sseRetryDelay * 2, 30000);
             };
 
             src.onopen = () => {
-                lastSSEEvent = Date.now();
+                lastSSEData = Date.now();
                 sseFailCount = 0;
-                document.getElementById('sse-dot').className = 'sse-dot live';
-                document.getElementById('sse-label').textContent = 'Live';
-                document.getElementById('disconnect-overlay').classList.remove('visible');
                 sseRetryDelay = 1000;
+                showConnected();
             };
         }
 
-        // Heartbeat: if no SSE event received in 15s, consider disconnected
-        let lastSSEEvent = Date.now();
-        const _origConnectSSE = connectSSE;
-        connectSSE = function() {
-            _origConnectSSE();
-        };
+        // Heartbeat: detect silently-dead SSE (e.g. TCP half-open)
         setInterval(() => {
-            const elapsed = Date.now() - lastSSEEvent;
-            if (elapsed > 15000 && sseFailCount === 0) {
-                // SSE connection may be silently dead
-                sseFailCount = 2;
-                document.getElementById('sse-dot').className = 'sse-dot';
-                document.getElementById('sse-label').textContent = 'Disconnected';
-                document.getElementById('disconnect-overlay').classList.add('visible');
-                document.getElementById('disco-retry').textContent = 'Connection lost — waiting for backend…';
+            if (Date.now() - lastSSEData > 15000) {
+                showDisconnected('Connection lost — waiting for backend…');
             }
         }, 5000);
 

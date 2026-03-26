@@ -151,48 +151,72 @@ def daemon_disable() -> None:
 
 @main.command()
 def status() -> None:
-    """One-shot status check of all Zellij sessions."""
+    """Unified status: nodes, sessions (local + remote), and fleet health."""
     logging.basicConfig(level=logging.WARNING, stream=sys.stderr)
 
     async def _status() -> None:
         from . import zellij
         from .detector import PaneDetector
+        from .nodes import NodeRegistry, load_nodes
+        from .monitor import Monitor
+        from .events import EventBus
 
         config = load_config()
+        node_list = load_nodes()
+        reg = NodeRegistry(node_list)
+        bus = EventBus(config.events_file)
+        mon = Monitor(reg, config, bus)
 
-        if not await zellij.is_available():
-            click.echo("❌ Zellij is not installed or not in PATH", err=True)
-            sys.exit(1)
+        # Poll all nodes (includes local)
+        fleet = await mon.poll_all()
+        click.echo(fleet.summary())
 
-        sessions = await zellij.list_sessions()
-        if not sessions:
-            click.echo("No Zellij sessions found.")
-            return
-
-        detector = PaneDetector(config)
         state_icons = {
-            "active": "⏳",
-            "idle": "✅",
-            "waiting": "🔔",
-            "error": "❌",
-            "exited": "🏁",
-            "unknown": "❓",
+            "active": "⏳", "idle": "✅", "waiting": "🔔",
+            "error": "❌", "exited": "🏁", "unknown": "❓",
         }
 
-        for s in sessions:
-            try:
-                content = await zellij.dump_pane(session=s.name)
-                state = detector.detect(s.name, "focused", content)
-                idle = detector.get_idle_seconds(s.name, "focused")
-                icon = state_icons.get(state.value, "❓")
-                marker = " (current)" if s.is_current else ""
-                last = ""
-                lines = content.strip().splitlines()
-                if lines:
-                    last = lines[-1][:50]
-                click.echo(f"  {icon} {s.name}{marker}  [{state.value}]  idle={idle:.0f}s  {last}")
-            except Exception as e:
-                click.echo(f"  ❓ {s.name}  [error: {e}]")
+        # Detailed per-session output, grouped by node
+        detector = PaneDetector(config)
+        for nh in fleet.nodes:
+            icon = "●" if nh.state.value == "online" else "○"
+            label = nh.name
+            if nh.error:
+                click.echo(f"\n{icon} {label}: {nh.state.value} ({nh.error})")
+                continue
+            count = nh.total_sessions
+            click.echo(f"\n{icon} {label}: {count} session(s)")
+
+            if nh.name == "local":
+                # Show detailed local sessions with state detection
+                sessions = await zellij.list_sessions()
+                for s in sessions:
+                    try:
+                        content = await zellij.dump_pane(session=s.name)
+                        state = detector.detect(s.name, "focused", content)
+                        idle = detector.get_idle_seconds(s.name, "focused")
+                        si = state_icons.get(state.value, "❓")
+                        marker = " (current)" if s.is_current else ""
+                        last = ""
+                        lines = content.strip().splitlines()
+                        if lines:
+                            last = lines[-1][:50]
+                        click.echo(f"    {si} {s.name}{marker}  [{state.value}]  idle={idle:.0f}s  {last}")
+                    except Exception as e:
+                        click.echo(f"    ❓ {s.name}  [error: {e}]")
+            elif nh.sessions:
+                # Show remote sessions from poll data
+                for rs in nh.sessions:
+                    st = rs.state.value if hasattr(rs.state, 'value') else str(rs.state)
+                    si = state_icons.get(st, "❓")
+                    click.echo(f"    {si} {rs.session}  [{st}]  idle={rs.idle_seconds:.0f}s")
+
+        # Stuck sessions warning
+        stuck = mon.stuck_sessions()
+        if stuck:
+            click.echo(f"\n⚠ {len(stuck)} stuck session(s):")
+            for s in stuck:
+                click.echo(f"    {s.node}:{s.session} idle {s.idle_seconds:.0f}s")
 
     asyncio.run(_status())
 
@@ -509,13 +533,8 @@ def config() -> None:
 
 @main.command()
 def nodes() -> None:
-    """List configured nodes."""
-    from .nodes import load_nodes
-    node_list = load_nodes()
-    click.echo(f"Nodes ({len(node_list)}):")
-    for n in node_list:
-        host = n.host or "(local)"
-        click.echo(f"  {n.name}  [{n.transport_type}]  {host}")
+    """List configured nodes. (Alias for 'zpilot status')"""
+    status()
 
 
 @main.command("serve-http")
@@ -947,37 +966,8 @@ def attach(session: str) -> None:
 
 @main.command()
 def fleet() -> None:
-    """One-shot fleet health check across all nodes."""
-    logging.basicConfig(level=logging.WARNING, stream=sys.stderr)
-
-    async def _fleet() -> None:
-        from .nodes import NodeRegistry, load_nodes
-        from .monitor import Monitor
-        from .events import EventBus
-
-        cfg = load_config()
-        reg = NodeRegistry(load_nodes())
-        bus = EventBus(cfg.events_file)
-        mon = Monitor(reg, cfg, bus)
-        status = await mon.poll_all()
-
-        click.echo(status.summary())
-        for nh in status.nodes:
-            icon = "●" if nh.state.value == "online" else "○"
-            line = f"  {icon} {nh.name}: {nh.state.value}"
-            if nh.error:
-                line += f" ({nh.error})"
-            if nh.sessions:
-                line += f" — {nh.total_sessions} sessions ({nh.busy_count} busy)"
-            click.echo(line)
-
-        stuck = mon.stuck_sessions()
-        if stuck:
-            click.echo(f"\n⚠ {len(stuck)} stuck session(s):")
-            for s in stuck:
-                click.echo(f"  {s.node}:{s.session} idle {s.idle_seconds:.0f}s")
-
-    asyncio.run(_fleet())
+    """Fleet health check. (Alias for 'zpilot status')"""
+    status()
 
 
 @main.command("install-zellij-plugin")

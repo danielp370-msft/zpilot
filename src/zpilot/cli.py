@@ -772,6 +772,143 @@ def join(token: str, my_name: str | None, my_url: str | None, port: int | None) 
     click.echo(f"  Check fleet:  zpilot fleet")
 
 
+# ── Attach (interactive PTY) ──────────────────────────────────────
+
+@main.command()
+@click.argument("session")
+def attach(session: str) -> None:
+    """Attach to a live session's PTY stream.
+
+    SESSION can be a local session name or node:session for remote.
+    Streams raw PTY I/O to your terminal — full interactive experience.
+
+    Examples:
+      zpilot attach hello
+      zpilot attach dandroid1:copilot-1
+    """
+    import sys
+    import tty
+    import termios
+
+    # Determine target URL
+    if ":" in session:
+        node_name, remote_session = session.split(":", 1)
+        from .config import load_config
+        from .nodes import load_nodes
+
+        nodes = load_nodes()
+        node = None
+        for n in nodes:
+            if n.name == node_name:
+                node = n
+                break
+        if not node:
+            click.echo(f"Unknown node: {node_name}", err=True)
+            sys.exit(1)
+
+        # Build WebSocket URL from node's HTTP URL
+        base = node.url.rstrip("/")
+        if base.startswith("https://"):
+            ws_base = "wss://" + base[8:]
+        elif base.startswith("http://"):
+            ws_base = "ws://" + base[7:]
+        else:
+            ws_base = "ws://" + base
+        ws_url = f"{ws_base}/ws/pty/{remote_session}"
+    else:
+        # Local — connect to web dashboard
+        cfg = load_config()
+        # Find running web dashboard
+        pid_dir = _user_pid_dir()
+        state_file = pid_dir / "web.state"
+        if state_file.exists():
+            import json
+            state = json.loads(state_file.read_text())
+            port = state.get("port", 8095)
+            host = state.get("host", "127.0.0.1")
+        else:
+            port = 8095
+            host = "127.0.0.1"
+        ws_url = f"ws://{host}:{port}/ws/pty/{session}"
+
+    click.echo(f"Attaching to {session}...")
+    click.echo(f"Press Ctrl+] to detach\n")
+
+    async def _attach():
+        import websockets
+        import ssl as _ssl
+
+        ssl_ctx = None
+        if ws_url.startswith("wss://"):
+            ssl_ctx = _ssl.create_default_context()
+            ssl_ctx.check_hostname = False
+            ssl_ctx.verify_mode = _ssl.CERT_NONE
+
+        async with websockets.connect(ws_url, ssl=ssl_ctx) as ws:
+            stop = asyncio.Event()
+
+            # Get terminal size and send resize
+            try:
+                cols, rows = os.get_terminal_size()
+                import json
+                await ws.send(json.dumps({"type": "resize", "cols": cols, "rows": rows}))
+            except OSError:
+                pass
+
+            async def recv_loop():
+                """Receive from WS and write to stdout."""
+                try:
+                    while not stop.is_set():
+                        data = await ws.recv()
+                        if isinstance(data, bytes):
+                            sys.stdout.buffer.write(data)
+                            sys.stdout.buffer.flush()
+                        elif isinstance(data, str):
+                            sys.stdout.write(data)
+                            sys.stdout.flush()
+                except (websockets.exceptions.ConnectionClosed, Exception):
+                    stop.set()
+
+            async def send_loop():
+                """Read stdin and send to WS."""
+                loop = asyncio.get_event_loop()
+                try:
+                    while not stop.is_set():
+                        data = await loop.run_in_executor(
+                            None, lambda: sys.stdin.buffer.read1(4096)
+                        )
+                        if not data:
+                            break
+                        # Check for Ctrl+] (0x1d) — detach
+                        if b'\x1d' in data:
+                            stop.set()
+                            break
+                        await ws.send(data)
+                except (websockets.exceptions.ConnectionClosed, Exception):
+                    stop.set()
+
+            await asyncio.gather(recv_loop(), send_loop())
+
+    # Put terminal in raw mode for full pass-through
+    old_attrs = None
+    try:
+        fd = sys.stdin.fileno()
+        old_attrs = termios.tcgetattr(fd)
+        tty.setraw(fd)
+    except (ValueError, termios.error):
+        pass
+
+    try:
+        asyncio.run(_attach())
+    except KeyboardInterrupt:
+        pass
+    finally:
+        # Restore terminal
+        if old_attrs is not None:
+            termios.tcsetattr(fd, termios.TCSADRAIN, old_attrs)
+        click.echo("\nDetached.")
+
+
 @main.command()
 def fleet() -> None:
     """One-shot fleet health check across all nodes."""

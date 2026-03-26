@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
+import os
 import time
 from pathlib import Path
 
@@ -459,7 +461,244 @@ async def ws_terminal(websocket: WebSocket, session_name: str):
         pass
 
 
-import re as _re
+# ── Raw PTY byte streaming ─────────────────────────────────────────────
+#
+# Unlike /ws/terminal (which polls + re-renders through pyte), this
+# endpoint tails the raw log file and streams bytes directly to the
+# client. xterm.js handles ANSI natively, so no server-side rendering.
+# Input goes through the FIFO (or remote relay) unchanged.
+
+LOG_DIR = Path("/tmp/zpilot/logs")
+FIFO_DIR = Path("/tmp/zpilot/fifos")
+_pty_log = logging.getLogger("zpilot.pty")
+
+
+@app.websocket("/ws/pty/{session_name:path}")
+async def ws_pty_stream(websocket: WebSocket, session_name: str):
+    """Raw PTY byte stream over WebSocket.
+
+    Server → Client: binary frames with raw PTY output (ANSI preserved)
+    Client → Server: JSON messages:
+      - {type: "input", data: "..."} — raw keystrokes
+      - {type: "resize", cols: N, rows: N} — terminal resize
+      - plain text — treated as raw input
+    """
+    node, local_session = _parse_node_session(session_name)
+    await websocket.accept()
+
+    if node:
+        # Remote session: relay through the peer's /ws/pty endpoint
+        await _relay_remote_pty(websocket, node, local_session)
+        return
+
+    # Local session: tail the log file + write to FIFO
+    log_file = LOG_DIR / f"{local_session}--main.log"
+    fifo_path = FIFO_DIR / f"{local_session}.fifo"
+
+    if not log_file.exists():
+        await websocket.send_json({"type": "error", "data": f"No log file for session {local_session}"})
+        await websocket.close()
+        return
+
+    _pty_log.info("PTY stream opened for %s", session_name)
+
+    # Send existing content first (catch-up)
+    try:
+        with open(log_file, "rb") as f:
+            existing = f.read()
+        if existing:
+            # Send in chunks to avoid huge frames
+            chunk_size = 16384
+            for i in range(0, len(existing), chunk_size):
+                await websocket.send_bytes(existing[i:i + chunk_size])
+    except Exception as e:
+        _pty_log.warning("Error reading initial log for %s: %s", session_name, e)
+
+    # Tail the log file using inotify-like polling
+    stop_event = asyncio.Event()
+
+    async def tail_log():
+        """Continuously tail the log file and push new bytes."""
+        try:
+            fd = os.open(str(log_file), os.O_RDONLY)
+            # Seek to end (we already sent existing content)
+            os.lseek(fd, 0, os.SEEK_END)
+
+            while not stop_event.is_set():
+                data = os.read(fd, 8192)
+                if data:
+                    try:
+                        await websocket.send_bytes(data)
+                    except (WebSocketDisconnect, RuntimeError):
+                        break
+                else:
+                    # No new data — wait briefly before retrying
+                    await asyncio.sleep(0.02)  # 50Hz max poll rate
+        except (OSError, WebSocketDisconnect, RuntimeError):
+            pass
+        finally:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+
+    async def write_to_fifo(data: bytes):
+        """Write input data to the session's FIFO."""
+        if not fifo_path.exists():
+            return
+        try:
+            fd = os.open(str(fifo_path), os.O_WRONLY | os.O_NONBLOCK)
+            os.write(fd, data)
+            os.close(fd)
+        except OSError as e:
+            _pty_log.debug("FIFO write error for %s: %s", session_name, e)
+
+    # Start tail in background
+    tail_task = asyncio.create_task(tail_log())
+
+    try:
+        while True:
+            msg = await websocket.receive()
+
+            if msg.get("type") == "websocket.disconnect":
+                break
+
+            # Handle binary frames (raw input)
+            if "bytes" in msg and msg["bytes"]:
+                await write_to_fifo(msg["bytes"])
+                continue
+
+            # Handle text frames (JSON or plain text)
+            text = msg.get("text", "")
+            if not text:
+                continue
+
+            try:
+                data = json.loads(text)
+                msg_type = data.get("type", "")
+
+                if msg_type == "input":
+                    raw = data.get("data", "")
+                    if raw:
+                        await write_to_fifo(raw.encode("utf-8"))
+                elif msg_type == "resize":
+                    cols = data.get("cols", 80)
+                    rows = data.get("rows", 24)
+                    resize_cmd = f"\x00RESIZE:{cols},{rows}\n".encode()
+                    await write_to_fifo(resize_cmd)
+                else:
+                    # Unknown type, treat data field as input
+                    raw = data.get("data", "")
+                    if raw:
+                        await write_to_fifo(raw.encode("utf-8"))
+            except json.JSONDecodeError:
+                # Plain text → raw input
+                if text:
+                    await write_to_fifo(text.encode("utf-8"))
+
+    except WebSocketDisconnect:
+        pass
+    except Exception as e:
+        _pty_log.warning("PTY stream error for %s: %s", session_name, e)
+    finally:
+        stop_event.set()
+        tail_task.cancel()
+        _pty_log.info("PTY stream closed for %s", session_name)
+
+
+async def _relay_remote_pty(websocket: WebSocket, node, session: str):
+    """Relay a PTY stream to/from a remote node's /ws/pty endpoint."""
+    import httpx
+
+    transport_opts = node.transport_opts or {}
+    base_url = transport_opts.get("url", "") or node.host or ""
+    token = transport_opts.get("token", "")
+    verify_ssl = transport_opts.get("verify_ssl", True)
+
+    if not base_url:
+        await websocket.send_json({"type": "error", "data": f"No URL for node {node.name}"})
+        await websocket.close()
+        return
+
+    # Convert http(s) to ws(s)
+    ws_url = base_url.rstrip("/")
+    if ws_url.startswith("https://"):
+        ws_url = "wss://" + ws_url[8:]
+    elif ws_url.startswith("http://"):
+        ws_url = "ws://" + ws_url[7:]
+    ws_url = f"{ws_url}/ws/pty/{session}"
+
+    _pty_log.info("Relaying PTY stream %s:%s via %s", node.name, session, ws_url)
+
+    try:
+        import websockets
+        import ssl as _ssl
+
+        ssl_ctx = None
+        if ws_url.startswith("wss://") and not verify_ssl:
+            ssl_ctx = _ssl.create_default_context()
+            ssl_ctx.check_hostname = False
+            ssl_ctx.verify_mode = _ssl.CERT_NONE
+
+        extra_headers = {}
+        if token:
+            extra_headers["Authorization"] = f"Bearer {token}"
+
+        async with websockets.connect(
+            ws_url,
+            ssl=ssl_ctx,
+            additional_headers=extra_headers,
+        ) as remote_ws:
+            stop = asyncio.Event()
+
+            async def forward_to_client():
+                """Remote → Client."""
+                try:
+                    async for msg in remote_ws:
+                        if isinstance(msg, bytes):
+                            await websocket.send_bytes(msg)
+                        else:
+                            await websocket.send_text(msg)
+                except Exception:
+                    stop.set()
+
+            async def forward_to_remote():
+                """Client → Remote."""
+                try:
+                    while not stop.is_set():
+                        msg = await websocket.receive()
+                        if msg.get("type") == "websocket.disconnect":
+                            break
+                        if "bytes" in msg and msg["bytes"]:
+                            await remote_ws.send(msg["bytes"])
+                        elif "text" in msg and msg["text"]:
+                            await remote_ws.send(msg["text"])
+                except (WebSocketDisconnect, Exception):
+                    pass
+                finally:
+                    stop.set()
+
+            # Run both directions concurrently
+            done, pending = await asyncio.wait(
+                [asyncio.create_task(forward_to_client()),
+                 asyncio.create_task(forward_to_remote())],
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            for t in pending:
+                t.cancel()
+
+    except ImportError:
+        # websockets not installed — fall back to polling mode
+        _pty_log.warning("websockets package not installed, cannot relay PTY for %s:%s", node.name, session)
+        await websocket.send_json({"type": "error", "data": "Remote PTY relay requires 'websockets' package"})
+    except Exception as e:
+        _pty_log.warning("Remote PTY relay error for %s:%s: %s", node.name, session, e)
+        await websocket.send_json({"type": "error", "data": str(e)})
+    finally:
+        try:
+            await websocket.close()
+        except Exception:
+            pass
 
 
 def _parse_node_session(name: str):
@@ -536,6 +775,8 @@ async def _remote_resize_pane(node, session: str, cols: int, rows: int):
 
 # Key name → zellij byte value mapping
 from zpilot.keys import map_key_to_zellij as _map_key_to_zellij
+
+import re as _re
 
 def _strip_ansi(text: str) -> str:
     """Strip ANSI escape codes and control characters from text.

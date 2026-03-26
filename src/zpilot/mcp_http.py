@@ -13,6 +13,7 @@ Each node runs its own zpilot HTTP server, exposing:
   - /api/sessions              — list local sessions (mesh discovery)
   - /api/peers                 — list directly-reachable peers
   - /api/mesh/join             — accept new node into mesh (invite-based)
+  - /ws/pty/{session}          — raw PTY byte stream (WebSocket)
   - /api/session/{name}/screen — get rendered screen content
   - /api/session/{name}/resize — resize a local session's terminal
   - /api/session/{name}/send   — send text + enter to a local session
@@ -39,7 +40,7 @@ from pathlib import Path
 
 import inspect
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.routing import Mount
@@ -832,6 +833,115 @@ def create_http_app(config: ZpilotConfig | None = None) -> FastAPI:
             pass
 
         return {"session": name, "content": "", "method": "none"}
+
+    # ── Raw PTY WebSocket ──
+
+    @app.websocket("/ws/pty/{session_name:path}")
+    async def ws_pty(websocket: WebSocket, session_name: str):
+        """Raw PTY byte stream over WebSocket.
+
+        Tails the shell_wrapper log file and streams raw bytes as binary
+        frames. Input from client is written to the session FIFO.
+        Much lower latency than the poll-based /ws/terminal/ endpoint
+        and lets xterm.js handle ANSI natively.
+        """
+        await websocket.accept()
+        import os as _os
+
+        log_dir = "/tmp/zpilot/logs"
+        fifo_dir = "/tmp/zpilot/fifos"
+        log_path = _os.path.join(log_dir, f"{session_name}--main.log")
+        fifo_path = _os.path.join(fifo_dir, f"{session_name}.fifo")
+
+        # Validate paths (no traversal)
+        real_log = _os.path.realpath(log_path)
+        real_fifo = _os.path.realpath(fifo_path)
+        if not real_log.startswith(_os.path.realpath(log_dir)):
+            await websocket.close(code=1008, reason="invalid session")
+            return
+        if not real_fifo.startswith(_os.path.realpath(fifo_dir)):
+            await websocket.close(code=1008, reason="invalid session")
+            return
+
+        if not _os.path.exists(log_path):
+            await websocket.close(code=1008, reason="session log not found")
+            return
+
+        stop = asyncio.Event()
+
+        async def _tail():
+            """Tail log file and send raw bytes."""
+            try:
+                fd = _os.open(log_path, _os.O_RDONLY)
+                try:
+                    # Send existing content (catch-up)
+                    while True:
+                        chunk = _os.read(fd, 65536)
+                        if not chunk:
+                            break
+                        await websocket.send_bytes(chunk)
+
+                    # Tail for new content
+                    while not stop.is_set():
+                        chunk = _os.read(fd, 65536)
+                        if chunk:
+                            await websocket.send_bytes(chunk)
+                        else:
+                            await asyncio.sleep(0.02)  # 50Hz max poll
+                finally:
+                    _os.close(fd)
+            except (WebSocketDisconnect, Exception):
+                stop.set()
+
+        async def _recv():
+            """Receive input from client and write to FIFO."""
+            try:
+                while not stop.is_set():
+                    msg = await websocket.receive()
+                    if msg.get("type") == "websocket.disconnect":
+                        break
+                    text = msg.get("text")
+                    data = msg.get("bytes")
+                    if text:
+                        import json as _json
+                        try:
+                            obj = _json.loads(text)
+                            if obj.get("type") == "resize":
+                                cols = int(obj.get("cols", 80))
+                                rows = int(obj.get("rows", 24))
+                                payload = f"\x00RESIZE:{cols},{rows}\n".encode()
+                                try:
+                                    fifo_fd = _os.open(fifo_path, _os.O_WRONLY | _os.O_NONBLOCK)
+                                    _os.write(fifo_fd, payload)
+                                    _os.close(fifo_fd)
+                                except OSError:
+                                    pass
+                            elif obj.get("type") == "input":
+                                payload = obj.get("data", "").encode()
+                                try:
+                                    fifo_fd = _os.open(fifo_path, _os.O_WRONLY | _os.O_NONBLOCK)
+                                    _os.write(fifo_fd, payload)
+                                    _os.close(fifo_fd)
+                                except OSError:
+                                    pass
+                        except (ValueError, TypeError):
+                            pass
+                    elif data:
+                        try:
+                            fifo_fd = _os.open(fifo_path, _os.O_WRONLY | _os.O_NONBLOCK)
+                            _os.write(fifo_fd, data)
+                            _os.close(fifo_fd)
+                        except OSError:
+                            pass
+            except (WebSocketDisconnect, Exception):
+                pass
+            finally:
+                stop.set()
+
+        try:
+            await asyncio.gather(_tail(), _recv())
+        except Exception:
+            pass
 
     return app
 

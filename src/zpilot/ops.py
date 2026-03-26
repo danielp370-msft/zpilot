@@ -405,8 +405,46 @@ async def get_output_history(session: str, lines: int = 50,
 # EXEC / FILE OPERATIONS
 # ══════════════════════════════════════════════════════════════
 
-async def exec_command(command: str, timeout: float = 30.0) -> dict:
-    """Execute a shell command on this node."""
+# Commands allowed via /api/exec. First token of the command must match.
+EXEC_ALLOWLIST: set[str] = {
+    "cat", "echo", "env", "false", "git", "grep", "head", "hostname",
+    "id", "kill", "ls", "mkdir", "pip", "pip3", "ps", "pwd", "rm",
+    "tail", "test", "touch", "true", "uname", "wc", "which", "whoami",
+    "zellij", "zpilot",
+}
+
+# Shell meta-characters that could bypass allowlist via chaining
+_SHELL_META = {"&&", "||", ";", "|", "`", "$(", ">", "<", "\n"}
+
+
+def _check_exec_allowlist(command: str) -> str | None:
+    """Validate command against allowlist. Returns error message or None."""
+    stripped = command.strip()
+    if not stripped:
+        return "Empty command"
+    # Block shell meta-characters that chain commands
+    for meta in _SHELL_META:
+        if meta in stripped:
+            return f"Shell meta-character not allowed: {meta!r}"
+    # Extract first token (the binary name)
+    first_token = shlex.split(stripped)[0] if stripped else ""
+    binary = os.path.basename(first_token)
+    if binary not in EXEC_ALLOWLIST:
+        return f"Command not in allowlist: {binary!r}"
+    return None
+
+
+async def exec_command(command: str, timeout: float = 30.0,
+                       *, allow_unsafe: bool = False) -> dict:
+    """Execute a shell command on this node.
+
+    Commands are validated against EXEC_ALLOWLIST unless allow_unsafe=True.
+    Local callers (CLI, internal) can bypass with allow_unsafe=True.
+    """
+    if not allow_unsafe:
+        err = _check_exec_allowlist(command)
+        if err:
+            return {"returncode": -1, "stdout": "", "stderr": f"Blocked: {err}"}
     try:
         proc = await asyncio.create_subprocess_shell(
             command,

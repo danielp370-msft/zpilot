@@ -209,16 +209,12 @@ class TokenAuthMiddleware(BaseHTTPMiddleware):
 async def proxy_to_node(node_name: str, tool_name: str, arguments: dict) -> dict:
     """Forward an MCP tool call to a sibling zpilot node.
 
-    Looks up the node in the registry and dispatches via its transport:
-    - MCP nodes: forward via HTTP to the node's /api/exec endpoint
-    - Local node: execute locally via subprocess
-    - Other transports: execute the zpilot-agent CLI on the remote node
+    Uses the node's /api/tool endpoint for proper MCP tool forwarding.
+    Falls back to /api/exec for SSH transports.
 
     Returns a dict with 'result' or 'error' key.
-    On unreachable nodes, returns an error with 'unreachable' flag.
     """
     import httpx
-    from .transport import CircuitBreaker
 
     registry = NodeRegistry(load_nodes())
     try:
@@ -227,27 +223,28 @@ async def proxy_to_node(node_name: str, tool_name: str, arguments: dict) -> dict
         return {"error": str(e)}
 
     if node.is_local:
-        # Execute locally — use proper JSON serialization, never shell interpolation
-        import json
-        import shlex
-        payload = json.dumps({"tool": tool_name, "arguments": arguments})
-        result = await node.transport.exec(
-            f'echo {shlex.quote(payload)} | cat',
-            timeout=30.0,
-        )
-        return {
-            "result": {
-                "tool": tool_name,
-                "node": node_name,
-                "returncode": result.returncode,
-                "stdout": result.stdout,
-                "stderr": result.stderr,
-            }
-        }
+        # Execute locally via the dispatch function
+        from .mcp_server import _dispatch
+        from .detector import PaneDetector
+        from .events import EventBus
+        from .monitor import Monitor
+
+        config = load_config()
+        detector = PaneDetector(config)
+        event_bus = EventBus(config.events_file)
+        reg = NodeRegistry(load_nodes())
+        monitor = Monitor(reg, config, event_bus)
+        try:
+            text = await _dispatch(
+                tool_name, arguments, config, detector, event_bus,
+                reg, monitor, None,
+            )
+            return {"result": {"tool": tool_name, "node": node_name, "text": text}}
+        except Exception as e:
+            return {"error": str(e)}
 
     if node.transport_type == "mcp" and hasattr(node.transport, "base_url"):
         transport = node.transport
-        # Check circuit breaker if available
         if hasattr(transport, "_circuit") and not transport._circuit.allow_request():
             return {
                 "error": f"Node '{node_name}' is unreachable (circuit breaker open)",
@@ -258,11 +255,8 @@ async def proxy_to_node(node_name: str, tool_name: str, arguments: dict) -> dict
             verify = getattr(transport, '_verify', False)
             async with httpx.AsyncClient(verify=verify, timeout=30.0) as client:
                 resp = await client.post(
-                    f"{transport.base_url}/api/exec",
-                    json={
-                        "command": f"echo 'proxy:{tool_name}'",
-                        "timeout": 25.0,
-                    },
+                    f"{transport.base_url}/api/tool",
+                    json={"tool": tool_name, "arguments": arguments},
                     headers=headers,
                 )
                 if resp.status_code == 200:
@@ -273,7 +267,7 @@ async def proxy_to_node(node_name: str, tool_name: str, arguments: dict) -> dict
                         "result": {
                             "tool": tool_name,
                             "node": node_name,
-                            **data,
+                            "text": data.get("result", ""),
                         }
                     }
                 if hasattr(transport, "_circuit"):
@@ -282,42 +276,28 @@ async def proxy_to_node(node_name: str, tool_name: str, arguments: dict) -> dict
         except httpx.TimeoutException:
             if hasattr(transport, "_circuit"):
                 transport._circuit.record_failure()
-            return {
-                "error": f"Timeout connecting to node '{node_name}'",
-                "unreachable": True,
-            }
+            return {"error": f"Timeout proxying to '{node_name}'", "unreachable": True}
         except (httpx.ConnectError, ConnectionError) as e:
             if hasattr(transport, "_circuit"):
                 transport._circuit.record_failure()
-            return {
-                "error": f"Node '{node_name}' is unreachable: {e}",
-                "unreachable": True,
-            }
+            return {"error": f"Node '{node_name}' unreachable: {e}", "unreachable": True}
         except Exception as e:
             if hasattr(transport, "_circuit"):
                 transport._circuit.record_failure()
-            return {"error": f"Failed to proxy to {node_name}: {e}"}
+            return {"error": f"Proxy to {node_name} failed: {e}"}
 
-    # Fallback: execute via the node's transport (SSH, etc.)
+    # Fallback for SSH transport: use transport.api_post if available
     try:
-        result = await node.transport.exec(
-            f"echo 'proxy:{tool_name}'",
+        data = await node.transport.api_post(
+            "/api/tool",
+            json={"tool": tool_name, "arguments": arguments},
             timeout=30.0,
         )
-        return {
-            "result": {
-                "tool": tool_name,
-                "node": node_name,
-                "returncode": result.returncode,
-                "stdout": result.stdout,
-                "stderr": result.stderr,
-            }
-        }
+        return {"result": {"tool": tool_name, "node": node_name, "text": data.get("result", "")}}
+    except NotImplementedError:
+        return {"error": f"Node '{node_name}' transport does not support tool proxy"}
     except Exception as e:
-        return {
-            "error": f"Node '{node_name}' is unreachable: {e}",
-            "unreachable": True,
-        }
+        return {"error": f"Node '{node_name}' unreachable: {e}", "unreachable": True}
 
 
 def create_http_app(config: ZpilotConfig | None = None) -> FastAPI:
@@ -362,6 +342,18 @@ def create_http_app(config: ZpilotConfig | None = None) -> FastAPI:
     # Shared health tracker instance for this app
     health_tracker = NodeHealthTracker(NodeRegistry(load_nodes()))
     app._health_tracker = health_tracker  # type: ignore[attr-defined]
+
+    # Shared state for tool proxy and other endpoints
+    from .detector import PaneDetector
+    from .events import EventBus
+    from .monitor import Monitor
+
+    _config = config
+    _detector = PaneDetector(config)
+    _event_bus = EventBus(config.events_file)
+    _registry = NodeRegistry(load_nodes())
+    _monitor = Monitor(_registry, config, _event_bus)
+    _health_tracker = health_tracker
 
     # ── Health endpoint (no auth) ────────────────────────────────
 
@@ -752,6 +744,36 @@ def create_http_app(config: ZpilotConfig | None = None) -> FastAPI:
         from . import ops
         result = await ops.get_screen(name, cols=cols, rows=rows)
         return {"session": name, "content": result.get("content", ""), "method": result.get("method", "none")}
+
+    # ── Tool proxy endpoint ──
+
+    @app.post("/api/tool")
+    async def api_tool(request: Request):
+        """Execute an MCP tool locally. Used for cross-node tool forwarding.
+
+        Accepts: {"tool": "read_pane", "arguments": {"session": "hello"}}
+        Returns: {"result": "...tool output text..."}
+        """
+        from .mcp_server import create_mcp_server, _dispatch
+        from .detector import PaneDetector
+        from .events import EventBus
+        from .monitor import Monitor
+
+        body = await request.json()
+        tool_name = body.get("tool", "")
+        arguments = body.get("arguments", {})
+        if not tool_name:
+            return JSONResponse({"error": "tool name required"}, status_code=400)
+
+        try:
+            text = await _dispatch(
+                tool_name, arguments,
+                _config, _detector, _event_bus,
+                _registry, _monitor, _health_tracker,
+            )
+            return {"result": text}
+        except Exception as e:
+            return JSONResponse({"error": str(e)}, status_code=500)
 
     # ── Raw PTY WebSocket ──
 

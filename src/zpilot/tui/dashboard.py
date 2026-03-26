@@ -169,11 +169,11 @@ class SessionPill(Static):
             label = label[:13] + "…"
         self.update(f"{icon} {label}")
         for cls in ("pill-idle", "pill-active", "pill-error",
-                     "pill-waiting", "pill-unknown"):
+                     "pill-waiting", "pill-exited", "pill-unknown"):
             self.remove_class(cls)
         tag = f"pill-{self.state}"
         if tag in ("pill-idle", "pill-active", "pill-error",
-                    "pill-waiting", "pill-unknown"):
+                    "pill-waiting", "pill-exited", "pill-unknown"):
             self.add_class(tag)
         else:
             self.add_class("pill-unknown")
@@ -579,6 +579,15 @@ class ZpilotApp(App):
             detector = PaneDetector(self.config)
             data: list[dict] = []
             for s in sessions:
+                if s.exited:
+                    data.append({
+                        "name": s.name,
+                        "state": "exited",
+                        "idle": 0,
+                        "last": "(session exited)",
+                        "content": "",
+                    })
+                    continue
                 try:
                     content = await zellij.dump_pane(session=s.name)
                     state = detector.detect(s.name, "focused", content)
@@ -642,30 +651,38 @@ class ZpilotApp(App):
             pass
 
     def _rebuild_dock(self, prev_states: dict[str, str] | None = None) -> None:
-        """Rebuild dock pills from session data."""
+        """Rebuild dock pills from session data (incremental when possible)."""
         try:
             dock = self.query_one("#dock", DockBar)
         except NoMatches:
             return
 
-        # Remove old pills (keep dock-count)
-        for pill in self.query(".pill"):
-            pill.remove()
+        existing = {p.session_name: p for p in self.query(".pill") if hasattr(p, "session_name")}
+        current_names = {s["name"] for s in self._session_data}
 
+        # Remove pills for sessions that no longer exist
+        for name, pill in existing.items():
+            if name not in current_names:
+                pill.remove()
+
+        # Update or create pills
         for i, s in enumerate(self._session_data):
-            pill = SessionPill(
-                s["name"], s["state"],
-                id=f"pill-{i}",
-                classes="pill",
-            )
-            dock.mount(pill, before=self.query_one("#dock-count", Static))
-
-            # Flash if state changed
-            if prev_states and s["name"] in prev_states:
-                old = prev_states[s["name"]]
-                if old != s["state"]:
-                    pill.styles.animate("opacity", 0.3, duration=0.15,
-                                        final_value=1.0)
+            if s["name"] in existing:
+                pill = existing[s["name"]]
+                pill.set_state(s["state"])
+                # Flash if state changed
+                if prev_states and s["name"] in prev_states:
+                    old = prev_states[s["name"]]
+                    if old != s["state"]:
+                        pill.styles.animate("opacity", 0.3, duration=0.15,
+                                            final_value=1.0)
+            else:
+                pill = SessionPill(
+                    s["name"], s["state"],
+                    id=f"pill-{i}",
+                    classes="pill",
+                )
+                dock.mount(pill, before=self.query_one("#dock-count", Static))
 
         self._highlight_dock()
 

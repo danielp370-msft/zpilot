@@ -896,6 +896,8 @@ def attach(session: str) -> None:
         else:
             ws_base = "ws://" + base
         ws_url = f"{ws_base}/ws/pty/{remote_session}"
+        ws_token = getattr(node, "token", "") or ""
+        ws_verify_ssl = getattr(node, "verify_ssl", True)
     else:
         # Local — connect to web dashboard
         cfg = load_config()
@@ -911,6 +913,8 @@ def attach(session: str) -> None:
             port = 8095
             host = "127.0.0.1"
         ws_url = f"ws://{host}:{port}/ws/pty/{session}"
+        ws_token = ""
+        ws_verify_ssl = True
 
     click.echo(f"Attaching to {session}...")
     click.echo(f"Press Ctrl+] to detach\n")
@@ -922,10 +926,18 @@ def attach(session: str) -> None:
         ssl_ctx = None
         if ws_url.startswith("wss://"):
             ssl_ctx = _ssl.create_default_context()
-            ssl_ctx.check_hostname = False
-            ssl_ctx.verify_mode = _ssl.CERT_NONE
+            if not ws_verify_ssl:
+                ssl_ctx.check_hostname = False
+                ssl_ctx.verify_mode = _ssl.CERT_NONE
 
-        async with websockets.connect(ws_url, ssl=ssl_ctx) as ws:
+        extra_headers = {}
+        if ws_token:
+            extra_headers["Authorization"] = f"Bearer {ws_token}"
+
+        async with websockets.connect(
+            ws_url, ssl=ssl_ctx,
+            additional_headers=extra_headers,
+        ) as ws:
             stop = asyncio.Event()
 
             # Get terminal size and send resize
@@ -994,6 +1006,13 @@ def attach(session: str) -> None:
 def fleet() -> None:
     """Fleet health check. (Alias for 'zpilot status')"""
     status()
+
+
+@main.command()
+@click.argument("session")
+def connect(session: str) -> None:
+    """Connect to a live session (alias for 'attach')."""
+    attach.callback(session)
 
 
 @main.command("install-zellij-plugin")

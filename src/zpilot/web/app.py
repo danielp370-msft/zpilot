@@ -14,7 +14,7 @@ from fastapi.responses import HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from .. import zellij
+from .. import ops, zellij
 from ..config import load_config
 from ..detector import PaneDetector
 from ..events import EventBus
@@ -87,29 +87,13 @@ async def api_sessions():
 
 @app.get("/api/sessions/local")
 async def api_sessions_local():
-    """List local sessions only. Symmetric endpoint matching MCP server.
-
-    Peers call this to discover what sessions are available on this node.
-    """
+    """List local sessions only. Symmetric endpoint matching MCP server."""
     import socket as _socket
     try:
-        sessions = await zellij.list_sessions()
+        sessions = await ops.list_sessions()
     except Exception:
         return {"node": _socket.gethostname(), "sessions": []}
-
-    result = []
-    for s in sessions:
-        entry = {"name": s.name, "is_current": s.is_current, "managed": s.managed}
-        try:
-            content = await zellij.dump_pane(session=s.name, tail_lines=3)
-            lines = content.strip().splitlines()[-3:] if content.strip() else []
-            entry["last_lines"] = lines
-            entry["last_line"] = lines[-1][:80] if lines else ""
-        except Exception:
-            entry["last_lines"] = []
-            entry["last_line"] = ""
-        result.append(entry)
-    return {"node": _socket.gethostname(), "sessions": result}
+    return {"node": _socket.gethostname(), "sessions": sessions}
 
 
 @app.get("/api/peers")
@@ -189,20 +173,7 @@ async def api_nodes():
 @app.get("/api/pane/{session_name:path}")
 async def api_pane_content(session_name: str, pane_name: str = "main", lines: int = 50):
     """JSON API: pane content. Supports node:session format for remote nodes."""
-    node, local_session = _parse_node_session(session_name)
-    if node:
-        content = await _remote_dump_pane_web(node, local_session)
-        clean = _strip_ansi(content)
-        return {
-            "session": session_name,
-            "pane": pane_name,
-            "node": node.name,
-            "state": "active",
-            "idle_seconds": 0,
-            "content": clean,
-            "lines": clean.strip().splitlines()[-lines:] if clean.strip() else [],
-        }
-    content = await zellij.dump_pane(session=session_name, pane_name=pane_name, tail_lines=lines)
+    content = await ops.read_pane(session=session_name, registry=node_registry)
     clean = _strip_ansi(content)
     state = detector.detect(session_name, "main", clean)
     return {
@@ -219,18 +190,17 @@ async def api_pane_content(session_name: str, pane_name: str = "main", lines: in
 @app.post("/api/session/{name}")
 async def api_create_session(name: str, command: str | None = None):
     """Create a new session."""
-    await zellij.new_session(name)
-    await asyncio.sleep(1)
+    result = await ops.create_session(name, registry=node_registry)
     if command:
-        await zellij.new_pane(session=name, name="main", command=command)
-    return {"status": "created", "session": name}
+        await asyncio.sleep(1)
+        await ops.run_in_pane(command, session=name, registry=node_registry)
+    return result
 
 
 @app.delete("/api/session/{name}")
 async def api_delete_session(name: str):
     """Delete a session."""
-    await zellij._run(["delete-session", name, "--force"], check=False)
-    return {"status": "deleted", "session": name}
+    return await ops.kill_session(name, registry=node_registry)
 
 
 @app.post("/api/session/{name}/adopt")

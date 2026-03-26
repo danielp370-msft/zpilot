@@ -18,6 +18,7 @@ from textual import on, work
 from rich.text import Text
 
 from ..config import load_config
+from ..card_render import render_card, SessionMode, CardContent, format_idle
 from ..events import EventBus
 from ..models import PaneState, ZpilotConfig
 
@@ -105,7 +106,7 @@ class SessionCard(Static):
     SessionCard {
         width: 1fr;
         height: auto;
-        min-height: 5;
+        min-height: 7;
         border: round $primary;
         padding: 0 1;
         margin: 0 1 1 0;
@@ -127,6 +128,7 @@ class SessionCard(Static):
         idle_secs: float = 0,
         last_line: str = "",
         copilot: bool = False,
+        content: str = "",
         **kwargs,
     ):
         self.session_name = session_name
@@ -134,17 +136,20 @@ class SessionCard(Static):
         self.idle_secs = idle_secs
         self.last_line = last_line
         self.copilot = copilot
+        self._content = content
         super().__init__(**kwargs)
 
     def on_mount(self) -> None:
         self.update(self._render())
         self._apply_state_class()
 
-    def refresh_data(self, state: str, idle_secs: float, last_line: str, copilot: bool = False) -> None:
+    def refresh_data(self, state: str, idle_secs: float, last_line: str,
+                     copilot: bool = False, content: str = "") -> None:
         self.state = state
         self.idle_secs = idle_secs
         self.last_line = last_line
         self.copilot = copilot
+        self._content = content
         self.update(self._render())
         self._apply_state_class()
 
@@ -156,24 +161,27 @@ class SessionCard(Static):
             self.add_class(tag)
 
     def _render(self) -> str:
-        icon = STATE_ICONS.get(self.state, "❓")
-        prefix = "🤖 " if self.copilot else ""
-        idle_str = self._format_idle(self.idle_secs)
-        preview = _clean_text(self.last_line[:60]) if self.last_line else ""
-        return (
-            f" {icon} {prefix}{self.session_name}\n"
-            f"   [{self.state}]  idle: {idle_str}\n"
-            f"   {preview}"
+        card = render_card(
+            name=self.session_name,
+            content=self._content or self.last_line,
+            state=self.state,
+            idle_secs=self.idle_secs,
+            copilot=self.copilot,
+            card_rows=4,
+            card_cols=28,
         )
-
-    @staticmethod
-    def _format_idle(secs: float) -> str:
-        if secs < 60:
-            return f"{secs:.0f}s"
-        elif secs < 3600:
-            return f"{secs / 60:.0f}m"
-        else:
-            return f"{secs / 3600:.1f}h"
+        idle_str = format_idle(self.idle_secs)
+        # Compact card layout
+        preview = card.preview[:80] if card.preview else ""
+        # Trim preview to 2 lines for compact cards
+        preview_lines = preview.split("\n")[:2]
+        preview_text = "\n   ".join(preview_lines)
+        return (
+            f" {card.icon} {self.session_name}\n"
+            f"   {card.status_line}\n"
+            f"   {preview_text}\n"
+            f"   idle: {idle_str}"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -449,18 +457,14 @@ class ExposeScreen(ModalScreen[int | None]):
                             f"  ── {node} ──",
                             classes="node-header",
                         )
-                    last_lines = ""
-                    if s.get("content"):
-                        lines = s["content"].strip().splitlines()
-                        last_lines = _clean_text(
-                            "\n".join(lines[-3:]) if lines else ""
-                        )
+                    content_text = _clean_text(s.get("content", ""))
                     card = SessionCard(
                         session_name=s["name"],
                         state=s["state"],
                         idle_secs=s["idle"],
-                        last_line=last_lines,
+                        last_line="",
                         copilot=s.get("copilot", False),
+                        content=content_text,
                         id=f"expose-card-{i}",
                     )
                     yield card
@@ -871,7 +875,7 @@ class ZpilotApp(App):
         idx = self.focused_session_index
         s = self._session_data[idx]
         icon = STATE_ICONS.get(s["state"], "❓")
-        idle_str = SessionCard._format_idle(s["idle"])
+        idle_str = format_idle(s["idle"])
 
         try:
             header = self.query_one("#focus-header", Static)
@@ -891,7 +895,7 @@ class ZpilotApp(App):
                 sidx = 0
             s2 = self._session_data[sidx]
             icon2 = STATE_ICONS.get(s2["state"], "❓")
-            idle2 = SessionCard._format_idle(s2["idle"])
+            idle2 = format_idle(s2["idle"])
             try:
                 self.query_one("#split-header", Static).update(
                     f"  {icon2} {s2['name']}  [{s2['state']}]  idle: {idle2}"

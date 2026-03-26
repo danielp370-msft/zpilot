@@ -983,6 +983,18 @@ async def _get_session_data() -> list[dict]:
 
     for s in sessions:
         seen_names.add(s.name)
+        if s.exited:
+            result.append({
+                "name": s.name,
+                "node": "local",
+                "state": "exited",
+                "idle_seconds": 0,
+                "is_current": False,
+                "managed": s.managed,
+                "last_lines": [],
+                "last_line": "(exited)",
+            })
+            continue
         try:
             content = await zellij.dump_pane(session=s.name)
             clean = _strip_ansi(content)
@@ -1026,12 +1038,13 @@ async def _get_session_data() -> list[dict]:
                 entries.append({
                     "name": remote_key,
                     "node": node.name,
-                    "state": "active",
+                    "state": s.get("state", "active"),
                     "idle_seconds": 0,
                     "is_current": False,
                     "managed": s.get("managed", False),
                     "last_lines": last_lines,
                     "last_line": last_lines[-1][:80] if last_lines else "",
+                    **({"pty_only": True} if s.get("pty_only") else {}),
                 })
             return entries
         except (NotImplementedError, ConnectionError):

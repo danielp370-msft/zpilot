@@ -80,20 +80,22 @@ async def adopt_session(name: str) -> bool:
 
 async def list_sessions() -> list[Session]:
     """List all Zellij sessions with managed status."""
-    raw = await _run(["list-sessions", "--no-formatting", "--short"], check=False)
+    raw = await _run(["list-sessions", "--no-formatting"], check=False)
     sessions = []
     for line in raw.strip().splitlines():
         line = line.strip()
         if not line:
             continue
-        # Format: "session_name [CURRENT]" or just "session_name"
+        # Format: "session_name [Created ...] (EXITED - ...)" or "session_name [CURRENT]"
         is_current = "[CURRENT]" in line or "(current)" in line.lower()
+        exited = "(EXITED" in line.upper()
         name = re.split(r"\s+\[", line)[0].strip()
         if name:
             sessions.append(Session(
                 name=name,
                 is_current=is_current,
                 managed=is_managed(name),
+                exited=exited,
             ))
     return sessions
 

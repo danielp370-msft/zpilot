@@ -579,6 +579,7 @@ def create_http_app(config: ZpilotConfig | None = None) -> FastAPI:
                 "name": s.name,
                 "is_current": s.is_current,
                 "managed": s.managed,
+                "state": "exited" if s.exited else "active",
             }
             try:
                 content = await dump_pane(session=s.name, tail_lines=3)

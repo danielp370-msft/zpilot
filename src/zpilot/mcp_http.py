@@ -572,21 +572,49 @@ def create_http_app(config: ZpilotConfig | None = None) -> FastAPI:
         except Exception:
             sessions = []
 
+        from .detector import PaneDetector
+        from .models import ZpilotConfig
+        import re as _re
+        _ansi_re = _re.compile(r'\x1b\[[0-9;]*[a-zA-Z]|\x1b\([A-B]')
+        _det = getattr(api_sessions, '_detector', None)
+        if _det is None:
+            _det = PaneDetector(ZpilotConfig())
+            api_sessions._detector = _det
+
         result = []
         for s in sessions:
             seen.add(s.name)
+            if s.exited:
+                result.append({
+                    "name": s.name,
+                    "is_current": s.is_current,
+                    "managed": s.managed,
+                    "state": "exited",
+                    "idle_seconds": 0,
+                    "heat": 0.0,
+                    "last_lines": [],
+                    "last_line": "",
+                })
+                continue
             entry = {
                 "name": s.name,
                 "is_current": s.is_current,
                 "managed": s.managed,
-                "state": "exited" if s.exited else "active",
+                "state": "active",
             }
             try:
                 content = await dump_pane(session=s.name, tail_lines=3)
-                lines = content.strip().splitlines()[-3:] if content.strip() else []
+                clean = _ansi_re.sub('', content) if content else ""
+                state = _det.detect(s.name, "main", clean)
+                entry["state"] = state.value
+                entry["idle_seconds"] = round(_det.get_idle_seconds(s.name, "main"), 1)
+                entry["heat"] = round(_det.get_heat(s.name, "main"), 3)
+                lines = clean.strip().splitlines()[-3:] if clean.strip() else []
                 entry["last_lines"] = lines
                 entry["last_line"] = lines[-1][:80] if lines else ""
             except Exception:
+                entry["idle_seconds"] = 0
+                entry["heat"] = 0.0
                 entry["last_lines"] = []
                 entry["last_line"] = ""
             result.append(entry)
@@ -626,6 +654,8 @@ def create_http_app(config: ZpilotConfig | None = None) -> FastAPI:
                 "last_lines": last_lines,
                 "last_line": last_lines[-1][:80] if last_lines else "",
                 "state": "active" if alive else "exited",
+                "idle_seconds": 0,
+                "heat": 0.0,
                 "pty_only": True,
             })
 

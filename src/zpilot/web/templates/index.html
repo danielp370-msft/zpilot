@@ -293,6 +293,13 @@
             overflow: hidden; text-overflow: ellipsis;
         }
         .dock-pill .pill-eye { font-size: 10px; }
+        .dock-pill .pill-close {
+            font-size: 11px; opacity: 0.5; cursor: pointer; margin-left: 2px;
+            color: var(--text-dim); line-height: 1;
+        }
+        .dock-pill .pill-close:hover { opacity: 1; color: var(--red); }
+        .dock-pill.exited { opacity: 0.5; }
+        .dock-pill.exited .pill-name { text-decoration: line-through; }
         .dock-pill .pill-node {
             opacity: 0.6; font-size: 10px; margin-right: 1px;
             color: var(--cyan, #66d9ef);
@@ -303,6 +310,7 @@
         .dot-active { background: var(--yellow); }
         .dot-waiting { background: var(--orange); }
         .dot-error { background: var(--red); }
+        .dot-exited { background: var(--text-dim); opacity: 0.5; }
         .dot-unknown { background: var(--text-dim); }
 
         /* Pill pulse animation on state change */
@@ -810,6 +818,7 @@
                 pill.className = 'dock-pill';
                 if (focusedSessions.includes(s.name)) pill.classList.add('focused');
                 if (!s.managed) pill.classList.add('unmanaged');
+                if (s.state === 'exited') pill.classList.add('exited');
                 if (s.state === 'error') pill.classList.add('error-glow');
                 if (attentionSet.has(s.name)) pill.classList.add('attention');
                 pill.dataset.session = s.name;
@@ -817,9 +826,17 @@
                 pill.innerHTML = `<span class="pill-dot ${dotClass(s.state)}"></span>` +
                     (s.node && s.node !== 'local' ? `<span class="pill-node">${esc(s.node)}:</span>` : '') +
                     `<span class="pill-name">${esc(s.node && s.node !== 'local' ? s.name.split(':').slice(1).join(':') : s.name)}</span>` +
-                    (!s.managed ? '<span class="pill-eye">👁</span>' : '');
+                    (!s.managed ? '<span class="pill-eye">👁</span>' : '') +
+                    (s.state === 'exited' ? '<span class="pill-close" title="Dismiss">✕</span>' : '');
 
-                pill.onclick = () => focusSession(s.name);
+                pill.onclick = (e) => {
+                    if (e.target.classList.contains('pill-close')) {
+                        e.stopPropagation();
+                        dismissSession(s.name);
+                        return;
+                    }
+                    focusSession(s.name);
+                };
                 pill.oncontextmenu = (e) => { e.preventDefault(); showCtxMenu(e, s.name); };
                 dock.insertBefore(pill, form);
             });
@@ -935,12 +952,23 @@
             visible.forEach(name => {
                 const el = document.getElementById('term-' + name);
                 if (!el) return;
+                const si = sessionsData[name] || {};
                 const term = createTerminal(name);
                 if (!term.element || !el.contains(term.element)) {
                     term.open(el);
                     setTimeout(() => fitTerminal(name), 50);
                 }
-                connectTerminalWS(name);
+                // Disable cursor for exited sessions, enable for live ones
+                if (si.state === 'exited') {
+                    term.options.cursorBlink = false;
+                    term.options.cursorStyle = 'bar';
+                    term.options.cursorInactiveStyle = 'none';
+                    term.write('\r\n\x1b[2m── session exited ──\x1b[0m');
+                } else {
+                    term.options.cursorBlink = true;
+                    term.options.cursorStyle = 'block';
+                    connectTerminalWS(name);
+                }
             });
 
             // Destroy terminals not visible
@@ -1066,14 +1094,20 @@
             ctxTarget = name;
             const ctx = document.getElementById('ctx-menu');
             const s = sessionsData[name];
-            document.getElementById('ctx-adopt').style.display = (s && !s.managed) ? '' : 'none';
-            ctx.style.left = e.clientX + 'px';
-            ctx.style.top = (e.clientY - ctx.offsetHeight - 8) + 'px';
-            // Clamp to viewport
-            const rect = ctx.getBoundingClientRect();
-            if (rect.top < 0) ctx.style.top = '4px';
-            if (rect.right > window.innerWidth) ctx.style.left = (window.innerWidth - 160) + 'px';
+            const isExited = s && s.state === 'exited';
+            document.getElementById('ctx-adopt').style.display = (s && !s.managed && !isExited) ? '' : 'none';
+            document.getElementById('ctx-close').style.display = '';
+            // Position: show above click point, but measure first
+            ctx.style.left = '-9999px';
+            ctx.style.top = '-9999px';
             ctx.classList.add('visible');
+            const h = ctx.offsetHeight;
+            let top = e.clientY - h - 8;
+            let left = e.clientX;
+            if (top < 4) top = e.clientY + 8;  // flip below if no room above
+            if (left + 160 > window.innerWidth) left = window.innerWidth - 164;
+            ctx.style.left = left + 'px';
+            ctx.style.top = top + 'px';
         }
         async function ctxAdopt() {
             if (!ctxTarget) return;
@@ -1099,6 +1133,22 @@
         }
         // Expose globally for onclick
         window.focusSession = focusSession;
+
+        // Dismiss exited session (remove from view, clean up files)
+        async function dismissSession(name) {
+            try {
+                await fetch(`/api/session/${encodeURIComponent(name)}`, { method: 'DELETE' });
+            } catch(e) { /* ignore — might already be gone */ }
+            if (focusedSessions.includes(name)) {
+                focusedSessions = focusedSessions.filter(n => n !== name);
+                destroyTerminal(name);
+                renderFocus();
+            }
+            delete sessionsData[name];
+            sessionsList = sessionsList.filter(s => s.name !== name);
+            renderDock();
+        }
+        window.dismissSession = dismissSession;
 
         // ══════════════════════════════════════════
         // SESSION CREATE (dock inline form)

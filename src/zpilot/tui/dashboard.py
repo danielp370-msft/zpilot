@@ -672,6 +672,7 @@ class ZpilotApp(App):
         try:
             from .. import zellij
             from ..detector import PaneDetector
+            from ..card_render import velocity_tracker
 
             if self._zellij_available is None:
                 self._zellij_available = await zellij.is_available()
@@ -698,6 +699,8 @@ class ZpilotApp(App):
                     continue
                 try:
                     content = await zellij.dump_pane(session=s.name)
+                    # Track output velocity for adaptive rendering
+                    velocity_tracker.update(s.name, len(content) if content else 0)
                     state = detector.detect(s.name, "focused", content)
                     idle = detector.get_idle_seconds(s.name, "focused")
                     last_line = ""

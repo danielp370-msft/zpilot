@@ -1,22 +1,27 @@
 """Context-adaptive session card rendering.
 
 Detects session type and renders an appropriate mini-preview:
-  Mode 1 (visual):  Mini block-char thumbnail (cmatrix, htop, vim)
+  Mode 1 (visual):  Mini block-char thumbnail (cmatrix, htop, vim, or high-velocity output)
   Mode 2 (copilot): Last action + outcome summary
   Mode 3 (build):   Progress indicator + last meaningful line
   Mode 4 (shell):   Last command + idle status
+
+Output velocity tracking: sessions pushing lots of data get the visual
+mini-render by default — if bytes are flowing fast, the user cares about
+what it looks like, not parsed text.
 """
 
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+import time
+from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
 
 
 class SessionMode(Enum):
-    VISUAL = "visual"      # TUI app, full-screen program
+    VISUAL = "visual"      # TUI app, full-screen program, or high-velocity output
     COPILOT = "copilot"    # AI agent (copilot-cli, aider, etc.)
     BUILD = "build"        # Build/CI/test process
     SHELL = "shell"        # Interactive shell
@@ -93,21 +98,97 @@ _COPILOT_PATTERNS = {
 }
 
 
-def detect_mode(name: str, content: str, raw_content: str = "") -> SessionMode:
-    """Detect what mode a session is operating in."""
+# ── Output velocity tracker ──────────────────────────────────
+
+# Bytes/sec threshold: above this, treat as high-velocity (visual render)
+VELOCITY_THRESHOLD = 500  # 500 bytes/sec = fast output
+
+
+@dataclass
+class _VelocitySample:
+    content_len: int = 0
+    timestamp: float = 0.0
+
+
+class VelocityTracker:
+    """Track output velocity (bytes/sec) per session.
+
+    Call `update(session, content_len)` each poll cycle.
+    Call `get_velocity(session)` to get smoothed bytes/sec.
+    """
+
+    def __init__(self, smoothing: float = 0.3):
+        self._samples: dict[str, _VelocitySample] = {}
+        self._velocities: dict[str, float] = {}
+        self._smoothing = smoothing  # EMA smoothing factor (0-1, higher = more responsive)
+
+    def update(self, session: str, content_len: int) -> float:
+        """Record new content length, return current velocity (bytes/sec)."""
+        now = time.monotonic()
+        prev = self._samples.get(session)
+
+        if prev is None or prev.timestamp == 0.0:
+            self._samples[session] = _VelocitySample(content_len, now)
+            self._velocities[session] = 0.0
+            return 0.0
+
+        dt = now - prev.timestamp
+        if dt < 0.1:  # too fast, skip
+            return self._velocities.get(session, 0.0)
+
+        delta_bytes = max(0, content_len - prev.content_len)
+        instant_vel = delta_bytes / dt
+
+        # Exponential moving average
+        old_vel = self._velocities.get(session, 0.0)
+        new_vel = self._smoothing * instant_vel + (1 - self._smoothing) * old_vel
+
+        self._samples[session] = _VelocitySample(content_len, now)
+        self._velocities[session] = new_vel
+        return new_vel
+
+    def get_velocity(self, session: str) -> float:
+        """Get current smoothed velocity for a session."""
+        return self._velocities.get(session, 0.0)
+
+    def is_high_velocity(self, session: str) -> bool:
+        """Check if session output is flowing fast enough for visual render."""
+        return self.get_velocity(session) > VELOCITY_THRESHOLD
+
+
+# Global tracker instance (shared across polls)
+velocity_tracker = VelocityTracker()
+
+
+def detect_mode(name: str, content: str, raw_content: str = "",
+                session_velocity: float = 0.0) -> SessionMode:
+    """Detect what mode a session is operating in.
+
+    Args:
+        session_velocity: output velocity in bytes/sec. If high, defaults to visual mode.
+    """
     name_lower = name.lower()
 
-    # Check name-based hints first
+    # Check name-based hints first (strongest signal)
     for prog in _COPILOT_PROGRAMS:
         if prog in name_lower:
             return SessionMode.COPILOT
 
-    # Check for visual/TUI apps (by name)
     for prog in _VISUAL_PROGRAMS:
         if prog in name_lower:
             return SessionMode.VISUAL
 
     lines = content.strip().splitlines()
+
+    # High velocity output → visual mode (the screen IS the content)
+    # But only if it doesn't match a known build/copilot pattern
+    if session_velocity > VELOCITY_THRESHOLD:
+        # Quick check: if it looks like a build, keep it as build
+        for line in reversed(lines[-10:]):
+            for pat, _ in _BUILD_PATTERNS:
+                if pat.search(line):
+                    return SessionMode.BUILD
+        return SessionMode.VISUAL
 
     # Check for build/CI processes BEFORE copilot content (avoid false positives)
     for line in reversed(lines[-20:]):
@@ -152,18 +233,17 @@ def render_card(
 ) -> CardContent:
     """Render adaptive card content for a session.
 
-    Args:
-        name: session name
-        content: cleaned text content of the pane
-        state: detected state (active/idle/waiting/etc.)
-        pyte_screen: optional pyte.Screen object for visual rendering
-        card_rows: height of preview area in chars
-        card_cols: width of preview area in chars
+    Automatically tracks output velocity and uses it for mode detection.
+    High-velocity sessions get the visual mini-render by default.
     """
-    mode = SessionMode.COPILOT if copilot else detect_mode(name, content)
+    # Update velocity tracker
+    vel = velocity_tracker.update(name, len(content))
+
+    mode = (SessionMode.COPILOT if copilot
+            else detect_mode(name, content, session_velocity=vel))
 
     if mode == SessionMode.VISUAL:
-        return _render_visual(name, content, pyte_screen, card_rows, card_cols, heat, idle_secs)
+        return _render_visual(name, content, pyte_screen, card_rows, card_cols, heat, idle_secs, vel)
     elif mode == SessionMode.COPILOT:
         return _render_copilot(name, content, heat, idle_secs)
     elif mode == SessionMode.BUILD:
@@ -176,15 +256,20 @@ def _render_visual(
     name: str, content: str,
     pyte_screen: Any, rows: int, cols: int,
     heat: float, idle_secs: float,
+    velocity: float = 0.0,
 ) -> CardContent:
-    """Mode 1: Mini block-char thumbnail for visual/TUI apps."""
+    """Mode 1: Mini block-char thumbnail for visual/TUI apps or high-velocity output."""
     if pyte_screen:
         preview = _mini_render_pyte(pyte_screen, rows, cols)
-        status = "🖥️  Visual app running"
     else:
-        # Fall back to content-based mini render
         preview = _mini_render_text(content, rows, cols)
-        status = "🖥️  Visual app"
+
+    if velocity > VELOCITY_THRESHOLD:
+        vel_str = f"{velocity:.0f} B/s"
+        status = f"🖥️  Streaming ({vel_str})"
+    else:
+        status = "🖥️  Visual app running"
+
     return CardContent(
         mode=SessionMode.VISUAL,
         icon="🖥️",

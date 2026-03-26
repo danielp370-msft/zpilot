@@ -930,17 +930,59 @@ async def event_stream():
     return StreamingResponse(generate(), media_type="text/event-stream")
 
 
+def _discover_shell_wrapper_sessions(exclude: set[str] | None = None) -> list[dict]:
+    """Discover shell_wrapper sessions from /tmp/zpilot/logs/ not already in Zellij."""
+    import glob as _glob
+    exclude = exclude or set()
+    entries = []
+    log_dir = "/tmp/zpilot/logs"
+    fifo_dir = "/tmp/zpilot/fifos"
+    for path in _glob.glob(os.path.join(log_dir, "*--main.log")):
+        fname = os.path.basename(path)
+        name = fname.rsplit("--main.log", 1)[0]
+        if not name or name in exclude:
+            continue
+        # Check if session is still alive (FIFO exists = process running)
+        has_fifo = os.path.exists(os.path.join(fifo_dir, f"{name}.fifo"))
+        # Read last few lines for preview
+        last_lines: list[str] = []
+        try:
+            with open(path, "rb") as f:
+                f.seek(0, 2)
+                size = f.tell()
+                f.seek(max(0, size - 2048))
+                tail = f.read().decode("utf-8", errors="replace")
+                raw_lines = tail.strip().splitlines()[-3:]
+                last_lines = [_strip_ansi(l)[:80] for l in raw_lines]
+        except Exception:
+            pass
+        entries.append({
+            "name": name,
+            "node": "local",
+            "state": "active" if has_fifo else "exited",
+            "idle_seconds": 0,
+            "is_current": False,
+            "managed": True,  # shell_wrapper sessions are always managed
+            "last_lines": last_lines,
+            "last_line": last_lines[-1] if last_lines else "",
+            "pty_only": True,  # hint: no Zellij, use /ws/pty/ only
+        })
+    return entries
+
+
 async def _get_session_data() -> list[dict]:
     """Get session status data, including remote nodes."""
     result = []
+    seen_names: set[str] = set()
 
-    # ── Local sessions ──
+    # ── Local Zellij sessions ──
     try:
         sessions = await zellij.list_sessions()
     except Exception:
         sessions = []
 
     for s in sessions:
+        seen_names.add(s.name)
         try:
             content = await zellij.dump_pane(session=s.name)
             clean = _strip_ansi(content)
@@ -968,6 +1010,9 @@ async def _get_session_data() -> list[dict]:
                 "last_lines": [],
                 "last_line": f"error: {e}",
             })
+
+    # ── Local shell_wrapper sessions (PTY-only, not in Zellij) ──
+    result.extend(_discover_shell_wrapper_sessions(seen_names))
 
     # ── Remote node sessions (symmetric: call peer's /api/sessions) ──
     async def _fetch_remote_sessions(node):

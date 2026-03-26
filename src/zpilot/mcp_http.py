@@ -560,19 +560,21 @@ def create_http_app(config: ZpilotConfig | None = None) -> FastAPI:
 
     @app.get("/api/sessions")
     async def api_sessions():
-        """List all local zellij sessions. Symmetric endpoint for mesh discovery.
+        """List all local sessions (Zellij + shell_wrapper). Symmetric endpoint for mesh discovery.
 
         Returns a list of sessions with name, state, and preview lines.
         Peers call this to discover what sessions are available on this node.
         """
         from .zellij import list_sessions, dump_pane
+        seen: set[str] = set()
         try:
             sessions = await list_sessions()
         except Exception:
-            return {"node": socket.gethostname(), "sessions": []}
+            sessions = []
 
         result = []
         for s in sessions:
+            seen.add(s.name)
             entry = {
                 "name": s.name,
                 "is_current": s.is_current,
@@ -587,6 +589,36 @@ def create_http_app(config: ZpilotConfig | None = None) -> FastAPI:
                 entry["last_lines"] = []
                 entry["last_line"] = ""
             result.append(entry)
+
+        # Also discover shell_wrapper-only sessions (PTY logs without Zellij)
+        import glob as _glob
+        log_dir = "/tmp/zpilot/logs"
+        fifo_dir = "/tmp/zpilot/fifos"
+        for path in _glob.glob(os.path.join(log_dir, "*--main.log")):
+            fname = os.path.basename(path)
+            name = fname.rsplit("--main.log", 1)[0]
+            if not name or name in seen:
+                continue
+            has_fifo = os.path.exists(os.path.join(fifo_dir, f"{name}.fifo"))
+            last_lines: list[str] = []
+            try:
+                with open(path, "rb") as f:
+                    f.seek(0, 2)
+                    sz = f.tell()
+                    f.seek(max(0, sz - 2048))
+                    tail = f.read().decode("utf-8", errors="replace")
+                    last_lines = tail.strip().splitlines()[-3:]
+            except Exception:
+                pass
+            result.append({
+                "name": name,
+                "is_current": False,
+                "managed": True,
+                "last_lines": last_lines,
+                "last_line": last_lines[-1][:80] if last_lines else "",
+                "state": "active" if has_fifo else "exited",
+                "pty_only": True,
+            })
 
         return {"node": socket.gethostname(), "sessions": result}
 

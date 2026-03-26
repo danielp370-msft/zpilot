@@ -13,11 +13,21 @@ import click
 from .config import ensure_config, load_config
 
 _ansi_re = re.compile(
-    r"\x1b[\[\]()][^\x07\x1b\n]*[\x07a-zA-Z~\\]?"  # real ESC sequences (CSI, OSC, etc.)
-    r"|\x1b[^[\]\n]"                    # other single-char ESC sequences
+    r"\x1b\[[0-9;?]*[a-zA-Z~]"         # CSI sequences
+    r"|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)"  # OSC sequences
+    r"|\x1b[\(\)][A-B0-2]"             # charset switches
+    r"|\x1b[><=cNOM78DEHZ]"            # mode switches
     r"|\x07"                            # BEL
-    r"|\^\[[\]?][^\n]*?(?:\^\[\\|\^G|[a-zA-Z~])"  # caret-notation escapes: ^[...]...
 )
+
+
+def _clean_line(text: str) -> str:
+    """Strip ANSI escapes and control chars from a terminal line."""
+    clean = _ansi_re.sub("", text)
+    clean = re.sub(r"[\x00-\x08\x0b-\x1f\x7f]", "", clean)
+    clean = re.sub(r"\^\[[\[\]()><=?][^\n]*", "", clean)
+    clean = re.sub(r"\^\[", "", clean)
+    return clean.strip()
 
 
 @click.group(invoke_without_command=True)
@@ -208,12 +218,7 @@ def status() -> None:
                         last = ""
                         lines = content.strip().splitlines()
                         for ln in reversed(lines):
-                            clean = _ansi_re.sub("", ln)
-                            clean = re.sub(r"[\x00-\x08\x0b-\x1f\x7f]", "", clean)
-                            # Strip caret-notation escapes (^[ = ESC in dump output)
-                            clean = re.sub(r"\^\[[\[\]()><=?][^\n]*", "", clean)
-                            clean = re.sub(r"\^\[", "", clean)
-                            clean = clean.strip()
+                            clean = _clean_line(ln)
                             if len(clean) > 3:
                                 last = clean[:50]
                                 break

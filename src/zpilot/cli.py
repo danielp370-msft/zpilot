@@ -223,7 +223,56 @@ def new(name: str, command: str | None) -> None:
 
 @main.command()
 def dashboard() -> None:
-    """Launch the TUI dashboard."""
+    """Open the zpilot web dashboard.
+
+    If already running, prints the URL.
+    If not running, starts it in the background and prints the URL.
+    """
+    ensure_config()
+    existing = _find_running_web()
+    if existing:
+        pid, port = existing
+        click.echo(f"🌐 http://localhost:{port}")
+        return
+
+    # Auto-start
+    import json
+    import subprocess
+
+    port = _find_free_port()
+    pid_dir = _user_pid_dir()
+
+    # Start daemon if needed
+    from .daemon import is_daemon_running as _daemon_running
+    if not _daemon_running():
+        daemon_cmd = [sys.executable, "-m", "zpilot.cli", "daemon", "start"]
+        daemon_proc = subprocess.Popen(
+            daemon_cmd,
+            stdout=open(pid_dir / "daemon.log", "w"),
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
+        )
+        (pid_dir / "daemon.pid").write_text(str(daemon_proc.pid))
+
+    # Start web server (no SSL for localhost simplicity)
+    cmd = [sys.executable, "-m", "zpilot.web.app", "--host", "127.0.0.1", "--port", str(port), "--no-ssl"]
+    proc = subprocess.Popen(
+        cmd,
+        stdout=open(pid_dir / "web.log", "w"),
+        stderr=subprocess.STDOUT,
+        start_new_session=True,
+    )
+    state_file = pid_dir / "web.state"
+    state_file.write_text(json.dumps({"pid": proc.pid, "port": port, "host": "127.0.0.1", "ssl": False}))
+    (pid_dir / "web.pid").write_text(str(proc.pid))
+
+    click.echo(f"🌐 http://localhost:{port}")
+    click.echo(f"   (started in background, PID {proc.pid})")
+
+
+@main.command()
+def tui() -> None:
+    """Launch the TUI dashboard (terminal UI)."""
     ensure_config()
     from .tui.dashboard import ZpilotApp
     app = ZpilotApp()
@@ -243,49 +292,88 @@ def web(host: str, port: int, no_ssl: bool) -> None:
     run_web(host=host, port=port, ssl=not no_ssl)
 
 
-PID_DIR = __import__("pathlib").Path("/tmp/zpilot")
+def _user_pid_dir() -> __import__("pathlib").Path:
+    """Per-user pid/state directory: /tmp/zpilot-<uid>."""
+    from pathlib import Path
+    d = Path(f"/tmp/zpilot-{os.getuid()}")
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def _find_running_web() -> tuple[int, int] | None:
+    """Return (pid, port) of an already-running zpilot web server for this user, or None."""
+    pid_dir = _user_pid_dir()
+    state_file = pid_dir / "web.state"
+    if not state_file.exists():
+        return None
+    try:
+        import json
+        state = json.loads(state_file.read_text())
+        pid = int(state["pid"])
+        port = int(state["port"])
+        os.kill(pid, 0)  # check alive
+        return (pid, port)
+    except (ProcessLookupError, ValueError, KeyError, json.JSONDecodeError):
+        state_file.unlink(missing_ok=True)
+        return None
+
+
+def _find_free_port(preferred: int = 8095) -> int:
+    """Return preferred port if free, otherwise pick a random free port."""
+    import socket
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        try:
+            s.bind(("127.0.0.1", preferred))
+            return preferred
+        except OSError:
+            s.bind(("127.0.0.1", 0))
+            return s.getsockname()[1]
+
+
+PID_DIR = _user_pid_dir  # kept as callable for back-compat in down()
 
 
 @main.command()
 @click.option("--host", default="127.0.0.1", help="Bind address (default: localhost only)")
-@click.option("--port", type=int, default=8095, help="Port number")
+@click.option("--port", type=int, default=None, help="Port number (auto-assigned if omitted)")
 @click.option("--no-ssl", is_flag=True, help="Disable SSL")
 @click.option("--open", "open_browser", is_flag=True, help="Open browser after starting")
-def up(host: str, port: int, no_ssl: bool, open_browser: bool) -> None:
+def up(host: str, port: int | None, no_ssl: bool, open_browser: bool) -> None:
     """Start zpilot services in the background.
 
     Launches the web dashboard as a background daemon with a pidfile.
+    Each user gets their own instance on an auto-assigned port.
     Binds to 127.0.0.1 by default — use --host 0.0.0.0 for remote access.
     Uses HTTPS by default with an auto-generated self-signed certificate.
     """
-    import os
+    import json
     import subprocess
 
-    PID_DIR.mkdir(parents=True, exist_ok=True)
-    web_pid_file = PID_DIR / "web.pid"
     proto = "http" if no_ssl else "https"
+    pid_dir = _user_pid_dir()
 
     # Check if already running
-    if web_pid_file.exists():
-        try:
-            pid = int(web_pid_file.read_text().strip())
-            os.kill(pid, 0)  # check if alive
-            click.echo(f"⚡ zpilot is already running (PID {pid})")
-            click.echo(f"   Dashboard: {proto}://localhost:{port}")
-            click.echo(f"   Stop with: zpilot down")
-            return
-        except (ProcessLookupError, ValueError):
-            web_pid_file.unlink(missing_ok=True)
+    existing = _find_running_web()
+    if existing:
+        pid, running_port = existing
+        click.echo(f"⚡ zpilot is already running (PID {pid})")
+        click.echo(f"   🌐 {proto}://localhost:{running_port}")
+        click.echo(f"   Stop with: zpilot down")
+        return
+
+    # Pick port
+    if port is None:
+        port = _find_free_port()
 
     # Start daemon if not already running
     from .daemon import is_daemon_running as _daemon_running
-    daemon_pid_file = PID_DIR / "daemon.pid"
+    daemon_pid_file = pid_dir / "daemon.pid"
     daemon_already = _daemon_running()
     if not daemon_already:
         daemon_cmd = [sys.executable, "-m", "zpilot.cli", "daemon", "start"]
         daemon_proc = subprocess.Popen(
             daemon_cmd,
-            stdout=open(PID_DIR / "daemon.log", "w"),
+            stdout=open(pid_dir / "daemon.log", "w"),
             stderr=subprocess.STDOUT,
             start_new_session=True,
         )
@@ -297,39 +385,43 @@ def up(host: str, port: int, no_ssl: bool, open_browser: bool) -> None:
         cmd.append("--no-ssl")
     proc = subprocess.Popen(
         cmd,
-        stdout=open(PID_DIR / "web.log", "w"),
+        stdout=open(pid_dir / "web.log", "w"),
         stderr=subprocess.STDOUT,
         start_new_session=True,
     )
-    web_pid_file.write_text(str(proc.pid))
+
+    # Save state with pid + port
+    state_file = pid_dir / "web.state"
+    state_file.write_text(json.dumps({"pid": proc.pid, "port": port, "host": host, "ssl": not no_ssl}))
+    # Back-compat pid file
+    (pid_dir / "web.pid").write_text(str(proc.pid))
 
     display_host = 'localhost' if host == '127.0.0.1' else host
     click.echo(f"⚡ zpilot is up!")
-    click.echo(f"   Dashboard: {proto}://{display_host}:{port}")
+    click.echo(f"   🌐 {proto}://{display_host}:{port}")
     click.echo(f"   Web PID:   {proc.pid}")
     if not daemon_already:
         click.echo(f"   Daemon:    started")
     else:
         click.echo(f"   Daemon:    already running (PID {daemon_already})")
-    click.echo(f"   Log:       {PID_DIR / 'web.log'}")
+    click.echo(f"   Log:       {pid_dir / 'web.log'}")
     click.echo(f"   Stop with: zpilot down")
 
     if open_browser:
         import webbrowser
-        webbrowser.open(f"http://localhost:{port}")
+        webbrowser.open(f"{proto}://{display_host}:{port}")
 
 
 @main.command()
 def down() -> None:
     """Stop zpilot background services (web + daemon)."""
-    import os
     import signal
 
-    PID_DIR.mkdir(parents=True, exist_ok=True)
+    pid_dir = _user_pid_dir()
     stopped = []
 
     for name, pid_filename in [("web", "web.pid"), ("daemon", "zpilot.pid")]:
-        pid_file = PID_DIR / pid_filename
+        pid_file = pid_dir / pid_filename
         if not pid_file.exists():
             continue
         try:
@@ -342,6 +434,9 @@ def down() -> None:
             pass
         finally:
             pid_file.unlink(missing_ok=True)
+
+    # Clean up state file too
+    (pid_dir / "web.state").unlink(missing_ok=True)
 
     if stopped:
         click.echo(f"⚡ zpilot stopped: {', '.join(stopped)}")
@@ -461,6 +556,220 @@ def token_gen() -> None:
     import secrets
     token = secrets.token_urlsafe(32)
     click.echo(token)
+
+
+# ── Mesh invite / join ──────────────────────────────────────────
+
+@main.command()
+@click.option("--url", default=None,
+              help="URL where this node is reachable (e.g. https://host:8222)")
+@click.option("--name", "node_name", default=None,
+              help="Name for the invited node (suggested)")
+@click.option("--expires", default=60, type=int,
+              help="Invite validity in minutes (default: 60)")
+def invite(url: str | None, node_name: str | None, expires: int) -> None:
+    """Generate a mesh invite for a new node to join.
+
+    Any zpilot can invite. The invite token contains this node's
+    URL and a one-time secret. The joining node uses it to connect.
+
+    Example:
+      zpilot invite --url https://myhost:8222
+      zpilot invite --url https://myhost:8222 --name build-server
+    """
+    from .mesh import generate_invite
+    from .config import load_config
+    import socket as _socket
+
+    cfg = load_config()
+
+    # Figure out our reachable URL
+    if not url:
+        host = cfg.http_host
+        port = cfg.http_port
+        scheme = "https" if cfg.http_tls else "http"
+        if host in ("0.0.0.0", "127.0.0.1", "localhost"):
+            # Try to use hostname for a more useful URL
+            hostname = _socket.gethostname()
+            click.echo(f"⚠ Server listens on {host} — using hostname '{hostname}'")
+            click.echo(f"  Pass --url if the joiner needs a different address\n")
+            host = hostname
+        url = f"{scheme}://{host}:{port}"
+
+    inviter_name = _socket.gethostname()
+
+    token, inv = generate_invite(
+        inviter_url=url,
+        inviter_name=inviter_name,
+        expires_minutes=expires,
+        suggested_name=node_name or "",
+    )
+
+    click.echo(f"✉ Mesh invite generated")
+    click.echo(f"  Inviter:  {inviter_name} ({url})")
+    if node_name:
+        click.echo(f"  For node: {node_name}")
+    click.echo(f"  Expires:  {expires} minutes\n")
+    click.echo(f"Run this on the new node:\n")
+    click.echo(f"  zpilot join --token {token}\n")
+    click.echo(f"Or if zpilot isn't installed yet:\n")
+    click.echo(f"  pip install -e /path/to/zpilot && zpilot join --token {token}")
+
+
+@main.command()
+@click.option("--token", required=True, help="Invite token from zpilot invite")
+@click.option("--name", "my_name", default=None,
+              help="Name for this node (default: hostname)")
+@click.option("--url", "my_url", default=None,
+              help="URL where this node will be reachable")
+@click.option("--port", default=None, type=int,
+              help="Port for local zpilot server (default: from config or 8222)")
+def join(token: str, my_name: str | None, my_url: str | None, port: int | None) -> None:
+    """Join a zpilot mesh using an invite token.
+
+    Decodes the invite, contacts the inviting node, exchanges
+    credentials, and adds both sides to each other's config.
+
+    Example:
+      zpilot join --token <token>
+      zpilot join --token <token> --name my-server --url https://myhost:9000
+    """
+    import socket as _socket
+
+    from .mesh import (
+        decode_invite,
+        add_node_to_config,
+        update_node_in_config,
+        build_join_request,
+        node_exists,
+    )
+    from .config import load_config
+
+    # Decode the invite
+    try:
+        inv = decode_invite(token)
+    except Exception as e:
+        click.echo(f"✗ Invalid invite token: {e}", err=True)
+        sys.exit(1)
+
+    inviter_url = inv["url"]
+    inviter_name = inv["inviter"]
+    invite_secret = inv["secret"]
+    suggested_name = inv.get("suggested_name", "")
+    expires = inv["expires"]
+
+    import time
+    if time.time() > expires:
+        click.echo("✗ Invite has expired. Ask for a new one.", err=True)
+        sys.exit(1)
+
+    click.echo(f"🔗 Joining mesh via {inviter_name} ({inviter_url})")
+    if suggested_name:
+        click.echo(f"  Suggested name: {suggested_name}")
+
+    # Determine our identity
+    if not my_name:
+        my_name = suggested_name or _socket.gethostname()
+
+    cfg = load_config()
+    my_port = port or cfg.http_port
+    my_scheme = "https" if cfg.http_tls else "http"
+
+    # Generate our bearer token if not configured
+    my_token = cfg.http_token
+    if not my_token:
+        import secrets as _secrets
+        my_token = _secrets.token_urlsafe(32)
+        click.echo(f"  Generated auth token (save to config.toml [http] token):")
+        click.echo(f"    {my_token}")
+
+    # Figure out our URL
+    if not my_url:
+        my_host = cfg.http_host
+        if my_host in ("0.0.0.0", "127.0.0.1", "localhost"):
+            my_host = _socket.gethostname()
+        my_url = f"{my_scheme}://{my_host}:{my_port}"
+
+    click.echo(f"  This node: {my_name} ({my_url})")
+
+    # Contact the inviter
+    click.echo(f"\n  Contacting {inviter_name}...")
+
+    import httpx
+
+    join_payload = build_join_request(
+        invite_secret=invite_secret,
+        node_name=my_name,
+        node_url=my_url,
+        node_token=my_token,
+        labels={"hostname": _socket.gethostname()},
+    )
+
+    try:
+        resp = httpx.post(
+            f"{inviter_url.rstrip('/')}/api/mesh/join",
+            json=join_payload,
+            verify=False,
+            timeout=15.0,
+        )
+    except httpx.ConnectError as e:
+        click.echo(f"\n✗ Cannot reach inviter at {inviter_url}: {e}", err=True)
+        click.echo("  Is the zpilot server running on that node?", err=True)
+        sys.exit(1)
+    except Exception as e:
+        click.echo(f"\n✗ Connection failed: {e}", err=True)
+        sys.exit(1)
+
+    if resp.status_code != 200:
+        try:
+            err = resp.json().get("error", resp.text)
+        except Exception:
+            err = resp.text
+        click.echo(f"\n✗ Join rejected ({resp.status_code}): {err}", err=True)
+        sys.exit(1)
+
+    data = resp.json()
+    if not data.get("ok"):
+        click.echo(f"\n✗ Join failed: {data.get('error', 'unknown')}", err=True)
+        sys.exit(1)
+
+    # Add the inviter to our nodes.toml
+    inviter_info = data["inviter"]
+    inv_name = inviter_info["name"]
+    inv_url = inviter_info["url"]
+    inv_token = inviter_info["token"]
+
+    click.echo(f"  ✓ Accepted by {inv_name}")
+
+    if node_exists(inv_name):
+        click.echo(f"  Updating existing node '{inv_name}'")
+        update_node_in_config(inv_name, inv_url, inv_token, verify_ssl=False)
+    else:
+        add_node_to_config(inv_name, inv_url, inv_token, verify_ssl=False)
+        click.echo(f"  Added {inv_name} → nodes.toml")
+
+    # Add any peers the inviter told us about
+    peers = data.get("peers", [])
+    for peer in peers:
+        pname = peer["name"]
+        if pname == my_name:
+            continue  # skip self
+        if node_exists(pname):
+            continue  # already known
+        try:
+            add_node_to_config(
+                pname, peer["url"], peer["token"],
+                labels=peer.get("labels", {}),
+                verify_ssl=False,
+            )
+            click.echo(f"  Added peer {pname} → nodes.toml")
+        except Exception as e:
+            click.echo(f"  ⚠ Could not add peer {pname}: {e}")
+
+    click.echo(f"\n✓ Joined mesh! {my_name} ↔ {inv_name}")
+    click.echo(f"  {data.get('message', '')}")
+    click.echo(f"\n  Start server: zpilot serve-http --port {my_port}")
+    click.echo(f"  Check fleet:  zpilot fleet")
 
 
 @main.command()

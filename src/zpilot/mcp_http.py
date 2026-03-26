@@ -12,12 +12,14 @@ Each node runs its own zpilot HTTP server, exposing:
   - /api/fleet-health — health status of all known nodes
   - /api/sessions              — list local sessions (mesh discovery)
   - /api/peers                 — list directly-reachable peers
+  - /api/mesh/join             — accept new node into mesh (invite-based)
   - /api/session/{name}/screen — get rendered screen content
   - /api/session/{name}/resize — resize a local session's terminal
   - /api/session/{name}/send   — send text + enter to a local session
   - /api/session/{name}/keys   — send special keys to a local session
 
 All endpoints except /health require Bearer token authentication.
+The /api/mesh/join endpoint uses invite-based auth (no bearer token needed).
 TLS is enabled by default for all network communication.
 """
 
@@ -35,9 +37,12 @@ import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 
+import inspect
+
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.routing import Mount
 
 from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
 
@@ -163,15 +168,15 @@ def generate_self_signed_cert(
 
 
 class TokenAuthMiddleware(BaseHTTPMiddleware):
-    """Validate Bearer token on all requests except /health."""
+    """Validate Bearer token on all requests except /health and /api/mesh/join."""
 
     def __init__(self, app, token: str):
         super().__init__(app)
         self.token = token
 
     async def dispatch(self, request: Request, call_next):
-        # Skip auth for health check
-        if request.url.path == "/health":
+        # Skip auth for health check and mesh join (uses invite-based auth)
+        if request.url.path in ("/health", "/api/mesh/join"):
             return await call_next(request)
 
         # Validate token
@@ -339,10 +344,20 @@ def create_http_app(config: ZpilotConfig | None = None) -> FastAPI:
         return {"status": "ok", "node": "zpilot"}
 
     # ── MCP endpoint ─────────────────────────────────────────────
+    # MCP >= 1.26 changed handle_request to ASGI (scope, receive, send).
+    # Detect the API and mount accordingly.
 
-    @app.api_route("/mcp", methods=["GET", "POST", "DELETE"])
-    async def mcp_endpoint(request: Request):
-        return await session_manager.handle_request(request)
+    _hr_sig = inspect.signature(session_manager.handle_request)
+    _hr_params = list(_hr_sig.parameters.keys())
+
+    if "scope" in _hr_params:
+        # MCP >= 1.26: mount as raw ASGI app at /mcp
+        app.mount("/mcp", app=session_manager.handle_request)
+    else:
+        # MCP < 1.26: Starlette Request-based API
+        @app.api_route("/mcp", methods=["GET", "POST", "DELETE"])
+        async def mcp_endpoint(request: Request):
+            return await session_manager.handle_request(request)
 
     # ── REST API for transport operations ────────────────────────
 
@@ -592,6 +607,113 @@ def create_http_app(config: ZpilotConfig | None = None) -> FastAPI:
                 "labels": node.labels,
             })
         return {"node": socket.gethostname(), "peers": peers}
+
+    # ── Mesh join endpoint ──────────────────────────────────────
+
+    @app.post("/api/mesh/join")
+    async def api_mesh_join(request: Request):
+        """Accept a new node into the mesh via invite token.
+
+        No bearer token required — uses one-time invite secret.
+        The joining node sends its identity + credentials, and
+        this node adds it to nodes.toml and returns its own
+        credentials + known peers.
+        """
+        from .mesh import (
+            validate_invite,
+            mark_invite_used,
+            add_node_to_config,
+            update_node_in_config,
+            node_exists,
+            build_join_response,
+        )
+
+        try:
+            body = await request.json()
+        except Exception:
+            return JSONResponse(
+                {"ok": False, "error": "Invalid JSON body"},
+                status_code=400,
+            )
+
+        invite_secret = body.get("secret", "")
+        joiner_name = body.get("name", "")
+        joiner_url = body.get("url", "")
+        joiner_token = body.get("token", "")
+        joiner_labels = body.get("labels", {})
+
+        if not invite_secret or not joiner_name:
+            return JSONResponse(
+                {"ok": False, "error": "Missing required fields: secret, name"},
+                status_code=400,
+            )
+
+        # Validate the invite
+        inv = validate_invite(invite_secret)
+        if inv is None:
+            return JSONResponse(
+                {"ok": False, "error": "Invalid, expired, or already-used invite"},
+                status_code=403,
+            )
+
+        # Mark invite as used
+        mark_invite_used(invite_secret, joiner_name)
+
+        # Add the joining node to our config
+        try:
+            if node_exists(joiner_name):
+                update_node_in_config(
+                    joiner_name, joiner_url, joiner_token,
+                    labels=joiner_labels, verify_ssl=False,
+                )
+                log.info("Mesh join: updated existing node '%s' (%s)", joiner_name, joiner_url)
+            else:
+                add_node_to_config(
+                    joiner_name, joiner_url, joiner_token,
+                    labels=joiner_labels, verify_ssl=False,
+                )
+                log.info("Mesh join: added new node '%s' (%s)", joiner_name, joiner_url)
+        except Exception as e:
+            log.error("Mesh join: failed to add node '%s': %s", joiner_name, e)
+            return JSONResponse(
+                {"ok": False, "error": f"Failed to register node: {e}"},
+                status_code=500,
+            )
+
+        # Build our info for the joiner
+        my_name = socket.gethostname()
+        my_url = inv.get("inviter_url", "")
+        my_token = getattr(app, "_zpilot_token", "")
+
+        # Collect known peers to share with the joiner
+        peers = []
+        registry = NodeRegistry(load_nodes())
+        for node in registry.all():
+            if node.is_local or node.name == joiner_name:
+                continue
+            peer_info = {
+                "name": node.name,
+                "url": node.host or "",
+                "token": node.transport_opts.get("token", ""),
+                "labels": node.labels,
+            }
+            # Only share peers that have MCP transport (have URL+token)
+            if peer_info["url"] and peer_info["token"]:
+                peers.append(peer_info)
+
+        # Reload the node registry to pick up the new node
+        try:
+            new_registry = NodeRegistry(load_nodes())
+            app._health_tracker = NodeHealthTracker(new_registry)
+        except Exception:
+            pass  # non-fatal
+
+        return build_join_response(
+            inviter_name=my_name,
+            inviter_url=my_url,
+            inviter_token=my_token,
+            peers=peers,
+        )
 
     @app.post("/api/session/{name}/resize")
     async def api_session_resize(name: str, request: Request):

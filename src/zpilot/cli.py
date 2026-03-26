@@ -5,11 +5,19 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import re
 import sys
 
 import click
 
 from .config import ensure_config, load_config
+
+_ansi_re = re.compile(
+    r"\x1b[\[\]()][^\x07\x1b\n]*[\x07a-zA-Z~\\]?"  # real ESC sequences (CSI, OSC, etc.)
+    r"|\x1b[^[\]\n]"                    # other single-char ESC sequences
+    r"|\x07"                            # BEL
+    r"|\^\[[\]?][^\n]*?(?:\^\[\\|\^G|[a-zA-Z~])"  # caret-notation escapes: ^[...]...
+)
 
 
 @click.group(invoke_without_command=True)
@@ -199,8 +207,16 @@ def status() -> None:
                         marker = " (current)" if s.is_current else ""
                         last = ""
                         lines = content.strip().splitlines()
-                        if lines:
-                            last = lines[-1][:50]
+                        for ln in reversed(lines):
+                            clean = _ansi_re.sub("", ln)
+                            clean = re.sub(r"[\x00-\x08\x0b-\x1f\x7f]", "", clean)
+                            # Strip caret-notation escapes (^[ = ESC in dump output)
+                            clean = re.sub(r"\^\[[\[\]()><=?][^\n]*", "", clean)
+                            clean = re.sub(r"\^\[", "", clean)
+                            clean = clean.strip()
+                            if len(clean) > 3:
+                                last = clean[:50]
+                                break
                         heat = detector.get_heat(s.name, "focused")
                         heat_bar = "🌡" + "█" * round(heat * 5) + "░" * (5 - round(heat * 5))
                         click.echo(f"    {si} {s.name}{marker}  [{state.value}]  idle={idle:.0f}s  {heat_bar}  {last}")

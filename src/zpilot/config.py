@@ -80,7 +80,22 @@ def load_config() -> ZpilotConfig:
     http = data.get("http", {})
     cfg.http_host = os.environ.get("ZPILOT_HTTP_HOST", http.get("host", cfg.http_host))
     cfg.http_port = int(os.environ.get("ZPILOT_HTTP_PORT", str(http.get("port", cfg.http_port))))
-    cfg.http_token = os.environ.get("ZPILOT_HTTP_TOKEN", http.get("token", cfg.http_token))
+
+    # Token resolution: support token_file (file: prefix or separate key)
+    raw_token = os.environ.get("ZPILOT_HTTP_TOKEN", http.get("token", cfg.http_token))
+    token_file = http.get("token_file", "")
+    if raw_token and raw_token.startswith("file:"):
+        # Inline file reference: token = "file:~/.config/zpilot/tokens/http.key"
+        from .security import load_token
+        loaded = load_token(raw_token[5:])
+        cfg.http_token = loaded or ""
+    elif token_file:
+        # Separate key: token_file = "~/.config/zpilot/tokens/http.key"
+        from .security import load_token
+        loaded = load_token(token_file)
+        cfg.http_token = loaded or ""
+    else:
+        cfg.http_token = raw_token
 
     tls_env = os.environ.get("ZPILOT_HTTP_TLS", "")
     if tls_env:

@@ -88,8 +88,26 @@ def load_nodes() -> list[Node]:
         # Everything else goes into transport_opts
         transport_opts = {
             k: v for k, v in cfg.items()
-            if k not in ("transport", "host", "labels")
+            if k not in ("transport", "host", "labels", "token_file")
         }
+
+        # Resolve token_file if present (replaces inline plaintext token)
+        token_file = cfg.get("token_file", "")
+        if token_file:
+            from .security import load_token
+            loaded = load_token(token_file)
+            if loaded:
+                transport_opts["token"] = loaded
+            else:
+                log.warning(f"Node {name}: could not read token from {token_file}")
+        elif "token" in transport_opts and transport_opts["token"].startswith("file:"):
+            from .security import load_token
+            loaded = load_token(transport_opts["token"][5:])
+            if loaded:
+                transport_opts["token"] = loaded
+            else:
+                log.warning(f"Node {name}: could not read token from file ref")
+
         nodes.append(Node(
             name=name,
             transport_type=transport_type,

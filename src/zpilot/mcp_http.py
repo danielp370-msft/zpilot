@@ -169,21 +169,39 @@ def generate_self_signed_cert(
 
 
 class TokenAuthMiddleware(BaseHTTPMiddleware):
-    """Validate Bearer token on all requests except /health and /api/mesh/join."""
+    """Validate Bearer token on all requests except /health and /api/mesh/join.
 
-    def __init__(self, app, token: str):
+    Includes rate limiting: locks out IPs after repeated auth failures.
+    """
+
+    def __init__(self, app, token: str, rate_limiter=None):
         super().__init__(app)
         self.token = token
+        self.rate_limiter = rate_limiter
 
     async def dispatch(self, request: Request, call_next):
         # Skip auth for health check and mesh join (uses invite-based auth)
         if request.url.path in ("/health", "/api/mesh/join"):
             return await call_next(request)
 
+        client_ip = request.client.host if request.client else "unknown"
+
+        # Check rate limit before even validating
+        if self.rate_limiter and self.rate_limiter.is_locked_out(client_ip):
+            return JSONResponse(
+                {"error": "Too many failed attempts. Try again later."},
+                status_code=429,
+            )
+
         # Validate token
         auth = request.headers.get("authorization", "")
         if not auth.startswith("Bearer ") or not secrets.compare_digest(auth[7:], self.token):
+            if self.rate_limiter:
+                self.rate_limiter.record_failure(client_ip)
             return JSONResponse({"error": "Unauthorized"}, status_code=401)
+
+        if self.rate_limiter:
+            self.rate_limiter.record_success(client_ip)
 
         return await call_next(request)
 
@@ -307,12 +325,18 @@ def create_http_app(config: ZpilotConfig | None = None) -> FastAPI:
     config = config or load_config()
 
     # Resolve token
-    token = config.http_token
-    if not token:
-        token = os.environ.get("ZPILOT_HTTP_TOKEN", "")
-    if not token:
-        token = generate_token()
-        log.warning("No HTTP token configured — generated ephemeral token: %s", token)
+    from .security import resolve_token, mask_token, audit_config_permissions, AuthRateLimiter
+
+    token = resolve_token(
+        config_token=config.http_token,
+        env_var="ZPILOT_HTTP_TOKEN",
+        token_name="http",
+    )
+
+    # Audit config file permissions on startup
+    perm_warnings = audit_config_permissions()
+    for w in perm_warnings:
+        log.warning(w)
 
     mcp_server = create_mcp_server(config)
     session_manager = StreamableHTTPSessionManager(
@@ -328,8 +352,9 @@ def create_http_app(config: ZpilotConfig | None = None) -> FastAPI:
 
     app = FastAPI(title="zpilot", lifespan=lifespan)
 
-    # Auth middleware
-    app.add_middleware(TokenAuthMiddleware, token=token)
+    # Auth middleware with rate limiting
+    rate_limiter = AuthRateLimiter(max_failures=10, lockout_seconds=60.0)
+    app.add_middleware(TokenAuthMiddleware, token=token, rate_limiter=rate_limiter)
 
     # Store token on app for reference
     app._zpilot_token = token  # type: ignore[attr-defined]
@@ -881,7 +906,8 @@ async def serve_http(config: ZpilotConfig | None = None) -> None:
     log.info("zpilot HTTP server starting on %s://%s:%d", scheme, host, port)
 
     if hasattr(app, "_zpilot_token"):
-        log.info("Auth token: %s", app._zpilot_token)  # type: ignore[attr-defined]
+        from .security import mask_token
+        log.info("Auth token: %s", mask_token(app._zpilot_token))  # type: ignore[attr-defined]
 
     server_config = uvicorn.Config(
         app, host=host, port=port, log_level="info", **ssl_kwargs

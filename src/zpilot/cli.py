@@ -542,7 +542,8 @@ def nodes() -> None:
 @main.command("serve-http")
 @click.option("--host", default=None, help="Bind address (default: from config)")
 @click.option("--port", type=int, default=None, help="Port number (default: from config)")
-@click.option("--token", default=None, help="Auth token (overrides config)")
+@click.option("--token", default=None, help="Auth token (overrides config). Prefer --token-file.")
+@click.option("--token-file", default=None, help="Read auth token from file (safer than --token)")
 @click.option("--tunnel", is_flag=True, default=False, help="Also start a devtunnel to expose the server publicly")
 @click.option("--tunnel-name", default="zpilot", help="Devtunnel name (default: zpilot)")
 @click.option("--tunnel-anonymous", is_flag=True, default=False, help="Allow anonymous tunnel access (for testing)")
@@ -550,6 +551,7 @@ def serve_http_cmd(
     host: str | None,
     port: int | None,
     token: str | None,
+    token_file: str | None,
     tunnel: bool,
     tunnel_name: str,
     tunnel_anonymous: bool,
@@ -566,7 +568,17 @@ def serve_http_cmd(
     if port is not None:
         config.http_port = port
     if token is not None:
+        import click as _click
+        _click.echo("⚠️  --token visible in process list. Prefer --token-file.", err=True)
         config.http_token = token
+    if token_file is not None:
+        from .security import load_token
+        loaded = load_token(token_file)
+        if loaded:
+            config.http_token = loaded
+        else:
+            click.echo(f"❌ Could not read token from {token_file}", err=True)
+            raise SystemExit(1)
 
     if tunnel:
         from .devtunnel import get_or_create_tunnel, host_tunnel, is_devtunnel_available
@@ -608,11 +620,20 @@ def serve_http_cmd(
 
 
 @main.command("token-gen")
-def token_gen() -> None:
-    """Generate a secure auth token for zpilot HTTP server."""
+@click.option("--name", default="http", help="Token name (default: http)")
+@click.option("--stdout", "to_stdout", is_flag=True, help="Print full token to stdout (insecure)")
+def token_gen(name: str, to_stdout: bool) -> None:
+    """Generate a secure auth token and save to token file."""
+    from .security import save_token, mask_token
     import secrets
     token = secrets.token_urlsafe(32)
-    click.echo(token)
+    path = save_token(name, token)
+    if to_stdout:
+        click.echo(token)
+    else:
+        click.echo(f"🔑 Token saved to: {path}")
+        click.echo(f"   Token: {mask_token(token)}")
+        click.echo(f"   Use: --token-file {path}")
 
 
 # ── Mesh invite / join ──────────────────────────────────────────
@@ -669,6 +690,7 @@ def invite(url: str | None, node_name: str | None, expires: int) -> None:
     click.echo(f"  Expires:  {expires} minutes\n")
     click.echo(f"Run this on the new node:\n")
     click.echo(f"  zpilot join --token {token}\n")
+    click.echo(f"  (token shown in full because it's a one-time invite)")
     click.echo(f"Or if zpilot isn't installed yet:\n")
     click.echo(f"  pip install -e /path/to/zpilot && zpilot join --token {token}")
 
@@ -735,10 +757,12 @@ def join(token: str, my_name: str | None, my_url: str | None, port: int | None) 
     # Generate our bearer token if not configured
     my_token = cfg.http_token
     if not my_token:
+        from .security import save_token, mask_token
         import secrets as _secrets
         my_token = _secrets.token_urlsafe(32)
-        click.echo(f"  Generated auth token (save to config.toml [http] token):")
-        click.echo(f"    {my_token}")
+        token_path = save_token("http", my_token)
+        click.echo(f"  Generated auth token: {mask_token(my_token)}")
+        click.echo(f"  Saved to: {token_path}")
 
     # Figure out our URL
     if not my_url:

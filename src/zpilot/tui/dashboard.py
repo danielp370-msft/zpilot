@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import re as _re
 from datetime import datetime
 
 from textual.app import App, ComposeResult
@@ -19,6 +20,28 @@ from rich.text import Text
 from ..config import load_config
 from ..events import EventBus
 from ..models import PaneState, ZpilotConfig
+
+# ---------------------------------------------------------------------------
+# ANSI / escape stripping
+# ---------------------------------------------------------------------------
+
+_ansi_re = _re.compile(
+    r"\x1b\[[0-9;?]*[a-zA-Z~]"
+    r"|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)"
+    r"|\x1b[\(\)][A-B0-2]"
+    r"|\x1b[><=cNOM78DEHZ]"
+    r"|\x07"
+)
+
+
+def _clean_text(text: str) -> str:
+    """Strip ANSI escapes and control chars from terminal output."""
+    clean = _ansi_re.sub("", text)
+    clean = _re.sub(r"[\x00-\x08\x0b-\x1f\x7f]", "", clean)
+    # Also strip caret-notation escapes from dump output
+    clean = _re.sub(r"\^\[[\[\]()><=?][^\n]*", "", clean)
+    clean = _re.sub(r"\^\[", "", clean)
+    return clean
 
 
 # ---------------------------------------------------------------------------
@@ -43,15 +66,21 @@ _STATE_PRIORITY = {
     "unknown": 5,
 }
 
+SPLIT_RATIOS = [(50, 50), (70, 30), (30, 70)]
+
 HELP_TEXT = """\
  zpilot — Keyboard Shortcuts
  ════════════════════════════
 
   e          Toggle Exposé (grid overview)
-  Tab        Next session
+  x          Kill session (in Exposé)
+  Tab        Next session (cycles right panel in split)
   Shift+Tab  Previous session
   1–9        Jump to session by dock position
-  v          Toggle vertical split
+  v          Cycle split right panel / enable split
+  V          Close split
+  +/-        Adjust split ratio
+  R          Rename focused session
   n          New session
   d          Delete / kill focused session
   r          Force refresh all sessions
@@ -97,22 +126,25 @@ class SessionCard(Static):
         state: str = "unknown",
         idle_secs: float = 0,
         last_line: str = "",
+        copilot: bool = False,
         **kwargs,
     ):
         self.session_name = session_name
         self.state = state
         self.idle_secs = idle_secs
         self.last_line = last_line
+        self.copilot = copilot
         super().__init__(**kwargs)
 
     def on_mount(self) -> None:
         self.update(self._render())
         self._apply_state_class()
 
-    def refresh_data(self, state: str, idle_secs: float, last_line: str) -> None:
+    def refresh_data(self, state: str, idle_secs: float, last_line: str, copilot: bool = False) -> None:
         self.state = state
         self.idle_secs = idle_secs
         self.last_line = last_line
+        self.copilot = copilot
         self.update(self._render())
         self._apply_state_class()
 
@@ -125,10 +157,11 @@ class SessionCard(Static):
 
     def _render(self) -> str:
         icon = STATE_ICONS.get(self.state, "❓")
+        prefix = "🤖 " if self.copilot else ""
         idle_str = self._format_idle(self.idle_secs)
-        preview = self.last_line[:60] if self.last_line else ""
+        preview = _clean_text(self.last_line[:60]) if self.last_line else ""
         return (
-            f" {icon} {self.session_name}\n"
+            f" {icon} {prefix}{self.session_name}\n"
             f"   [{self.state}]  idle: {idle_str}\n"
             f"   {preview}"
         )
@@ -308,6 +341,44 @@ class ConfirmDeleteScreen(ModalScreen[bool]):
 
 
 # ---------------------------------------------------------------------------
+# RenameSessionScreen
+# ---------------------------------------------------------------------------
+
+class RenameSessionScreen(ModalScreen[str | None]):
+    """Prompt for a new name for an existing session."""
+
+    DEFAULT_CSS = """
+    RenameSessionScreen { align: center middle; }
+    #rename-box {
+        width: 50;
+        height: auto;
+        border: thick $accent;
+        background: $surface;
+        padding: 1 2;
+    }
+    """
+
+    BINDINGS = [Binding("escape", "cancel", "Cancel", show=False)]
+
+    def __init__(self, current_name: str):
+        super().__init__()
+        self._current_name = current_name
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="rename-box"):
+            yield Label(f"Rename '{self._current_name}' to:")
+            yield Input(id="rename-input", value=self._current_name)
+
+    @on(Input.Submitted, "#rename-input")
+    def _submit(self, event: Input.Submitted) -> None:
+        value = event.value.strip()
+        self.dismiss(value if value and value != self._current_name else None)
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+
+# ---------------------------------------------------------------------------
 # ExposeScreen — grid overlay
 # ---------------------------------------------------------------------------
 
@@ -338,12 +409,21 @@ class ExposeScreen(ModalScreen[int | None]):
         grid-gutter: 1;
         overflow-y: auto;
     }
+    .node-header {
+        column-span: 3;
+        height: 1;
+        color: $text-muted;
+        text-style: bold italic;
+        margin: 1 0 0 0;
+    }
     """
 
     BINDINGS = [
         Binding("escape", "dismiss_expose", "Close", show=False),
         Binding("e", "dismiss_expose", "Close", show=False),
         Binding("enter", "select", "Select"),
+        Binding("x", "kill_selected", "Kill", show=True),
+        Binding("d", "kill_selected", "Kill", show=False),
     ]
 
     def __init__(self, session_data: list[dict], focused_idx: int = 0):
@@ -355,20 +435,32 @@ class ExposeScreen(ModalScreen[int | None]):
         with Vertical(id="expose-outer"):
             yield Static(
                 f"  Exposé — {len(self._session_data)} sessions  "
-                "(↑↓←→ navigate, Enter select, Esc close)",
+                "(↑↓←→ navigate, Enter select, x kill, Esc close)",
                 id="expose-title",
             )
             with Grid(id="expose-grid"):
+                current_node = None
                 for i, s in enumerate(self._session_data):
+                    # Show node section header when node changes
+                    node = s.get("node", "local")
+                    if node != current_node:
+                        current_node = node
+                        yield Static(
+                            f"  ── {node} ──",
+                            classes="node-header",
+                        )
                     last_lines = ""
                     if s.get("content"):
                         lines = s["content"].strip().splitlines()
-                        last_lines = "\n".join(lines[-3:]) if lines else ""
+                        last_lines = _clean_text(
+                            "\n".join(lines[-3:]) if lines else ""
+                        )
                     card = SessionCard(
                         session_name=s["name"],
                         state=s["state"],
                         idle_secs=s["idle"],
                         last_line=last_lines,
+                        copilot=s.get("copilot", False),
                         id=f"expose-card-{i}",
                     )
                     yield card
@@ -415,6 +507,11 @@ class ExposeScreen(ModalScreen[int | None]):
 
     def action_dismiss_expose(self) -> None:
         self.dismiss(None)
+
+    def action_kill_selected(self) -> None:
+        if self._session_data:
+            # Dismiss with negative index to signal "kill this session"
+            self.dismiss(-(self._selected + 1))
 
 
 # ---------------------------------------------------------------------------
@@ -510,11 +607,15 @@ class ZpilotApp(App):
         Binding("tab", "next_session", "Next", show=False),
         Binding("shift+tab", "prev_session", "Prev", show=False),
         Binding("v", "toggle_split", "Split", show=True),
+        Binding("V", "close_split", "Close split", show=False),
         Binding("n", "new_session", "New", show=True),
         Binding("d", "delete_session", "Delete", show=True),
+        Binding("R", "rename_session", "Rename", show=True),
         Binding("r", "refresh", "Refresh", show=True),
         Binding("q", "quit", "Quit", show=True),
         Binding("question_mark", "show_help", "Help", show=True),
+        Binding("plus", "grow_split", show=False),
+        Binding("minus", "shrink_split", show=False),
         Binding("1", "jump_1", show=False),
         Binding("2", "jump_2", show=False),
         Binding("3", "jump_3", show=False),
@@ -529,6 +630,7 @@ class ZpilotApp(App):
     focused_session_index: reactive[int] = reactive(0)
     split_mode: reactive[bool] = reactive(False)
     split_session_index: reactive[int] = reactive(1)
+    _split_ratio: reactive[int] = reactive(0)
 
     def __init__(self, config: ZpilotConfig | None = None):
         super().__init__()
@@ -586,6 +688,8 @@ class ZpilotApp(App):
                         "idle": 0,
                         "last": "(session exited)",
                         "content": "",
+                        "copilot": False,
+                        "node": "local",
                     })
                     continue
                 try:
@@ -596,12 +700,22 @@ class ZpilotApp(App):
                     lines = content.strip().splitlines()
                     if lines:
                         last_line = lines[-1]
+                    # Detect copilot-cli sessions
+                    copilot = False
+                    if content:
+                        last_200 = content[-200:] if len(content) > 200 else content
+                        if ("copilot" in s.name.lower()
+                                or "Copilot is ready" in last_200
+                                or "⏎ to send" in last_200):
+                            copilot = True
                     data.append({
                         "name": s.name,
                         "state": state.value,
                         "idle": idle,
                         "last": last_line,
                         "content": content,
+                        "copilot": copilot,
+                        "node": "local",
                     })
                 except Exception:
                     data.append({
@@ -610,7 +724,47 @@ class ZpilotApp(App):
                         "idle": 0,
                         "last": "",
                         "content": "",
+                        "copilot": False,
+                        "node": "local",
                     })
+
+            # Gather remote sessions from node registry
+            try:
+                from ..nodes import NodeRegistry, load_nodes
+                reg = NodeRegistry(load_nodes())
+                for node in reg.remote_nodes():
+                    try:
+                        sessions_data = await node.transport.api_get(
+                            "/api/sessions", timeout=8.0,
+                        )
+                        if isinstance(sessions_data, dict):
+                            remote_list = sessions_data.get("sessions", [])
+                        elif isinstance(sessions_data, list):
+                            remote_list = sessions_data
+                        else:
+                            remote_list = []
+                        for rs in remote_list:
+                            data.append({
+                                "name": f"{node.name}:{rs.get('name', '?')}",
+                                "state": rs.get("state", "unknown"),
+                                "idle": rs.get("idle_seconds", 0),
+                                "last": rs.get("last_line", ""),
+                                "content": "",
+                                "copilot": False,
+                                "node": node.name,
+                            })
+                    except Exception:
+                        data.append({
+                            "name": f"{node.name}:",
+                            "state": "error",
+                            "idle": 0,
+                            "last": f"{node.name} unreachable",
+                            "content": "",
+                            "copilot": False,
+                            "node": node.name,
+                        })
+            except Exception:
+                pass
 
             data.sort(key=_sort_key)
             prev_states = {s["name"]: s["state"] for s in self._session_data}
@@ -767,14 +921,14 @@ class ZpilotApp(App):
             log.clear()
             if content:
                 for line in content.splitlines():
-                    log.write(line)
+                    log.write(_clean_text(line))
             else:
                 log.write("[dim]No output yet[/dim]")
         except NoMatches:
             pass
 
     def _ensure_split_panel(self) -> None:
-        """Add the right split panel if not already present."""
+        """Add the right split panel if not already present, apply ratio."""
         try:
             self.query_one("#focus-right", RichLog)
         except NoMatches:
@@ -786,6 +940,18 @@ class ZpilotApp(App):
             container.mount(right)
             right.mount(header)
             right.mount(log)
+        # Apply current split ratio
+        left_pct, right_pct = SPLIT_RATIOS[self._split_ratio % len(SPLIT_RATIOS)]
+        try:
+            left = self.query_one("#focus-left", RichLog)
+            left.styles.width = f"{left_pct}%"
+        except NoMatches:
+            pass
+        try:
+            wrapper = self.query_one("#focus-right-wrapper")
+            wrapper.styles.width = f"{right_pct}%"
+        except NoMatches:
+            pass
 
     def _remove_split_panel(self) -> None:
         """Remove the right split panel if present."""
@@ -794,14 +960,26 @@ class ZpilotApp(App):
             wrapper.remove()
         except NoMatches:
             pass
+        # Restore left panel to full width
+        try:
+            left = self.query_one("#focus-left", RichLog)
+            left.styles.width = "1fr"
+        except NoMatches:
+            pass
 
     # -- Actions (keybindings) -----------------------------------------------
 
     def action_next_session(self) -> None:
         if self._session_data:
-            self.focused_session_index = (
-                (self.focused_session_index + 1) % len(self._session_data)
-            )
+            if self.split_mode:
+                # Tab cycles the right panel in split mode
+                self.split_session_index = (
+                    (self.split_session_index + 1) % len(self._session_data)
+                )
+            else:
+                self.focused_session_index = (
+                    (self.focused_session_index + 1) % len(self._session_data)
+                )
             self._update_focus()
 
     def action_prev_session(self) -> None:
@@ -830,14 +1008,37 @@ class ZpilotApp(App):
         if len(self._session_data) < 2:
             self.notify("Need at least 2 sessions to split")
             return
-        self.split_mode = not self.split_mode
         if self.split_mode:
-            # Pick a different session for the right panel
+            # Already split — cycle right panel to next session
+            self.split_session_index = (
+                (self.split_session_index + 1) % len(self._session_data)
+            )
+            self._update_focus()
+        else:
+            # Enable split, right panel = next session
+            self.split_mode = True
             self.split_session_index = (
                 (self.focused_session_index + 1) % len(self._session_data)
             )
-        self._update_focus()
-        self.notify("Split ON" if self.split_mode else "Split OFF")
+            self._update_focus()
+            self.notify("Split ON")
+
+    def action_close_split(self) -> None:
+        if self.split_mode:
+            self.split_mode = False
+            self._split_ratio = 0
+            self._update_focus()
+            self.notify("Split OFF")
+
+    def action_grow_split(self) -> None:
+        if self.split_mode:
+            self._split_ratio = (self._split_ratio + 1) % len(SPLIT_RATIOS)
+            self._ensure_split_panel()
+
+    def action_shrink_split(self) -> None:
+        if self.split_mode:
+            self._split_ratio = (self._split_ratio - 1) % len(SPLIT_RATIOS)
+            self._ensure_split_panel()
 
     def action_toggle_expose(self) -> None:
         if not self._session_data:
@@ -849,7 +1050,14 @@ class ZpilotApp(App):
         )
 
     def _on_expose_result(self, result: int | None) -> None:
-        if result is not None and 0 <= result < len(self._session_data):
+        if result is None:
+            return
+        if result < 0:
+            # Kill request: decode index
+            kill_idx = -(result + 1)
+            if 0 <= kill_idx < len(self._session_data):
+                self._kill_session_by_name(self._session_data[kill_idx]["name"])
+        elif 0 <= result < len(self._session_data):
             self.focused_session_index = result
             self._update_focus()
 
@@ -901,6 +1109,37 @@ class ZpilotApp(App):
     async def _do_refresh(self) -> None:
         self._zellij_available = None  # re-check availability
         await self._poll_sessions()
+
+    @work(exclusive=True, group="session-mgmt")
+    async def _kill_session_by_name(self, name: str) -> None:
+        try:
+            from .. import zellij
+            await zellij.kill_session(name)
+            self.notify(f"Killed: {name}")
+            await self._do_refresh()
+        except Exception as e:
+            self.notify(f"Error: {e}", severity="error")
+
+    def action_rename_session(self) -> None:
+        if not self._session_data:
+            return
+        name = self._session_data[self.focused_session_index]["name"]
+        self.push_screen(RenameSessionScreen(name), callback=self._on_rename)
+
+    @work(exclusive=True, group="session-mgmt")
+    async def _on_rename(self, new_name: str | None) -> None:
+        if not new_name:
+            return
+        old_name = self._session_data[self.focused_session_index]["name"]
+        try:
+            from .. import zellij
+            await zellij._run(
+                ["--session", old_name, "action", "rename-session", new_name]
+            )
+            self.notify(f"Renamed: {old_name} → {new_name}")
+            await self._do_refresh()
+        except Exception as e:
+            self.notify(f"Rename error: {e}", severity="error")
 
     # -- Pill click handler --------------------------------------------------
 

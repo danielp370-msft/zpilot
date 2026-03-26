@@ -1621,10 +1621,10 @@
 
         // Heartbeat: detect silently-dead SSE (e.g. TCP half-open)
         setInterval(() => {
-            if (Date.now() - lastSSEData > 15000) {
+            if (Date.now() - lastSSEData > 10000) {
                 showDisconnected('Connection lost — waiting for backend…');
             }
-        }, 5000);
+        }, 3000);
 
         // ══════════════════════════════════════════
         // KEYBOARD SHORTCUTS

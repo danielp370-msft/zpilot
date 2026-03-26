@@ -34,6 +34,38 @@ detector = PaneDetector(config)
 event_bus = EventBus(config.events_file)
 node_registry = NodeRegistry(load_nodes())
 
+# ── Remote session cache (fetched in background, never blocks SSE) ──
+_remote_cache: list[dict] = []
+_remote_cache_lock = asyncio.Lock()
+_remote_cache_age: float = 0.0  # time.monotonic() of last successful fetch
+_remote_fetcher_started = False
+
+async def _remote_fetcher_loop():
+    """Background task: fetch remote sessions every 5s, cache result."""
+    global _remote_cache, _remote_cache_age
+    while True:
+        try:
+            all_remote: list[dict] = []
+            tasks = [_fetch_remote_sessions_inner(n) for n in node_registry.remote_nodes()]
+            if tasks:
+                results = await asyncio.gather(*tasks, return_exceptions=True)
+                for r in results:
+                    if isinstance(r, list):
+                        all_remote.extend(r)
+            async with _remote_cache_lock:
+                _remote_cache = all_remote
+                _remote_cache_age = time.monotonic()
+        except Exception as e:
+            logging.getLogger("zpilot.web").debug(f"Remote fetch error: {e}")
+        await asyncio.sleep(5)
+
+@app.on_event("startup")
+async def _start_remote_fetcher():
+    global _remote_fetcher_started
+    if not _remote_fetcher_started:
+        _remote_fetcher_started = True
+        asyncio.create_task(_remote_fetcher_loop())
+
 
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request):
@@ -900,6 +932,9 @@ async def event_stream():
         last_count = len(event_bus.recent(999))
         prev_states: dict[str, str] = {}  # session -> last known state
 
+        # Send initial heartbeat immediately so browser knows stream is alive
+        yield ": heartbeat\n\n"
+
         while True:
             await asyncio.sleep(2)
 
@@ -913,6 +948,7 @@ async def event_stream():
                     yield f"data: {data}\n\n"
 
             # Poll session status and detect state changes inline
+            # (fast: local sessions + cached remote — no network blocking)
             sessions = await _get_session_data()
             for s in sessions:
                 old = prev_states.get(s["name"])
@@ -928,7 +964,8 @@ async def event_stream():
 
             yield f"event: status\ndata: {json.dumps(sessions)}\n\n"
 
-    return StreamingResponse(generate(), media_type="text/event-stream")
+    return StreamingResponse(generate(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
 def _discover_shell_wrapper_sessions(exclude: set[str] | None = None) -> list[dict]:
@@ -1040,65 +1077,62 @@ async def _get_session_data() -> list[dict]:
     # ── Local shell_wrapper sessions (PTY-only, not in Zellij) ──
     result.extend(_discover_shell_wrapper_sessions(seen_names))
 
-    # ── Remote node sessions (symmetric: call peer's /api/sessions) ──
-    async def _fetch_remote_sessions(node):
-        """Fetch sessions from a remote peer via its own /api/sessions endpoint."""
-        entries = []
-        try:
-            data = await node.transport.api_get("/api/sessions", timeout=10.0)
-            for s in data.get("sessions", []):
-                remote_key = f"{node.name}:{s['name']}"
-                last_lines = s.get("last_lines", [])
-                entries.append({
-                    "name": remote_key,
-                    "node": node.name,
-                    "state": s.get("state", "active"),
-                    "idle_seconds": s.get("idle_seconds", 0),
-                    "heat": s.get("heat"),
-                    "is_current": False,
-                    "managed": s.get("managed", False),
-                    "last_lines": last_lines,
-                    "last_line": last_lines[-1][:80] if last_lines else "",
-                    **({"pty_only": True} if s.get("pty_only") else {}),
-                })
-            return entries
-        except (NotImplementedError, ConnectionError):
-            pass
-        # Fallback: exec for SSH transport or old remote code
-        try:
-            res = await node.transport.exec(
-                "zellij list-sessions --no-formatting 2>/dev/null", timeout=10.0
-            )
-            if not res.ok or not res.stdout.strip():
-                return entries
-            for line in res.stdout.strip().splitlines():
-                sess_name = line.strip().split()[0] if line.strip() else ""
-                if not sess_name:
-                    continue
-                remote_key = f"{node.name}:{sess_name}"
-                entries.append({
-                    "name": remote_key,
-                    "node": node.name,
-                    "state": "active",
-                    "idle_seconds": 0,
-                    "is_current": False,
-                    "managed": False,
-                    "last_lines": [],
-                    "last_line": "",
-                })
-        except Exception:
-            pass
-        return entries
-
-    # Fetch all remote nodes in parallel
-    remote_tasks = [_fetch_remote_sessions(n) for n in node_registry.remote_nodes()]
-    if remote_tasks:
-        remote_results = await asyncio.gather(*remote_tasks, return_exceptions=True)
-        for r in remote_results:
-            if isinstance(r, list):
-                result.extend(r)
+    # ── Remote node sessions (from background cache — never blocks SSE) ──
+    async with _remote_cache_lock:
+        result.extend(_remote_cache)
 
     return sorted(result, key=lambda s: s["name"])
+
+
+async def _fetch_remote_sessions_inner(node) -> list[dict]:
+    """Fetch sessions from a remote peer via its own /api/sessions endpoint."""
+    entries = []
+    try:
+        data = await node.transport.api_get("/api/sessions", timeout=10.0)
+        for s in data.get("sessions", []):
+            remote_key = f"{node.name}:{s['name']}"
+            last_lines = s.get("last_lines", [])
+            entries.append({
+                "name": remote_key,
+                "node": node.name,
+                "state": s.get("state", "active"),
+                "idle_seconds": s.get("idle_seconds", 0),
+                "heat": s.get("heat", 0.0),
+                "is_current": False,
+                "managed": s.get("managed", False),
+                "last_lines": last_lines,
+                "last_line": last_lines[-1][:80] if last_lines else "",
+                **({"pty_only": True} if s.get("pty_only") else {}),
+            })
+        return entries
+    except (NotImplementedError, ConnectionError):
+        pass
+    # Fallback: exec for SSH transport or old remote code
+    try:
+        res = await node.transport.exec(
+            "zellij list-sessions --no-formatting 2>/dev/null", timeout=10.0
+        )
+        if not res.ok or not res.stdout.strip():
+            return entries
+        for line in res.stdout.strip().splitlines():
+            sess_name = line.strip().split()[0] if line.strip() else ""
+            if not sess_name:
+                continue
+            remote_key = f"{node.name}:{sess_name}"
+            entries.append({
+                "name": remote_key,
+                "node": node.name,
+                "state": "active",
+                "idle_seconds": 0,
+                "heat": 0.0,
+                "is_current": False,
+                "managed": False,
+                "last_lines": [],
+                "last_line": "",
+            })
+    except Exception:
+        pass
+    return entries
 
 
 async def _remote_dump_pane_web(node, session: str, cols: int = 80, rows: int = 24) -> str:

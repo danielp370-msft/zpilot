@@ -470,11 +470,20 @@
         .badge-error { background: rgba(248,81,73,0.15); color: var(--red); }
         .badge-unknown { background: rgba(139,148,158,0.15); color: var(--text-dim); }
         .card-preview {
-            font-size: 11px; color: var(--text-dim);
-            overflow: hidden; display: -webkit-box;
-            -webkit-line-clamp: 3; -webkit-box-orient: vertical;
-            line-height: 1.4; font-family: 'SF Mono', monospace;
+            font-size: 9px; color: var(--text-dim);
+            overflow: hidden;
+            line-height: 1.3; font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', monospace;
             word-break: break-all;
+            white-space: pre-wrap;
+            max-height: 5.2em;
+        }
+        .card-preview.visual-preview {
+            font-size: 7px; line-height: 1.0; letter-spacing: -0.5px;
+            color: var(--accent);
+        }
+        .card-status {
+            font-size: 10px; color: var(--text); margin: 2px 0;
+            overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
         }
         .card-meta {
             font-size: 10px; color: var(--text-dim); margin-top: auto;
@@ -1120,13 +1129,19 @@
                 const isError = s.state === 'error';
                 const isRemote = s.node && s.node !== 'local';
                 const displayName = isRemote ? s.name.split(':').slice(1).join(':') : s.name;
+                const cardIcon = s.card_icon || '❓';
+                const cardStatus = s.card_status || s.state || 'unknown';
+                const cardPreview = s.card_preview || s.last_line || '';
+                const isVisual = s.card_mode === 'visual';
+                const previewClass = isVisual ? 'card-preview visual-preview' : 'card-preview';
                 return `<div class="expose-card ${isError ? 'card-error' : ''}" onclick="focusSession('${esc(s.name)}')" data-session="${esc(s.name)}">
                     <div class="card-top">
                         ${isRemote ? `<span class="card-node-tag">${esc(s.node)}</span>` : ''}
-                        <span class="card-name">${esc(displayName)}</span>
+                        <span class="card-name">${cardIcon} ${esc(displayName)}</span>
                         <span class="card-badge ${badgeClass(s.state)}">${s.state || 'unknown'}</span>
                     </div>
-                    <div class="card-preview">${esc(s.last_line || s.last_lines?.[s.last_lines?.length-1] || '')}</div>
+                    <div class="card-status">${esc(cardStatus)}</div>
+                    <div class="${previewClass}">${esc(cardPreview)}</div>
                     <div class="card-meta">
                         ${!s.managed ? '<span class="card-unmanaged-tag">👁 unmanaged</span> · ' : ''}
                         idle ${formatIdle(s.idle_seconds)}

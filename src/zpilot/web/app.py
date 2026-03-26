@@ -990,6 +990,8 @@ def _discover_shell_wrapper_sessions(exclude: set[str] | None = None) -> list[di
 
 async def _get_session_data() -> list[dict]:
     """Get session status data, including remote nodes."""
+    from ..card_render import render_card, velocity_tracker
+
     result = []
     seen_names: set[str] = set()
 
@@ -1012,6 +1014,10 @@ async def _get_session_data() -> list[dict]:
                 "managed": s.managed,
                 "last_lines": [],
                 "last_line": "(exited)",
+                "card_mode": "shell",
+                "card_icon": "🏁",
+                "card_status": "Session exited",
+                "card_preview": "",
             })
             continue
         try:
@@ -1019,17 +1025,31 @@ async def _get_session_data() -> list[dict]:
             clean = _strip_ansi(content)
             state = detector.detect(s.name, "main", clean)
             idle = detector.get_idle_seconds(s.name, "main")
+            heat = detector.get_heat(s.name, "main")
             clean_lines = clean.strip().splitlines()[-3:] if clean.strip() else []
+
+            # Adaptive card rendering
+            velocity_tracker.update(s.name, len(content) if content else 0)
+            card = render_card(
+                name=s.name, content=clean,
+                state=state.value, idle_secs=idle, heat=heat,
+                card_rows=6, card_cols=30,
+            )
+
             result.append({
                 "name": s.name,
                 "node": "local",
                 "state": state.value,
                 "idle_seconds": round(idle, 1),
-                "heat": detector.get_heat(s.name, "main"),
+                "heat": heat,
                 "is_current": s.is_current,
                 "managed": s.managed,
                 "last_lines": clean_lines,
                 "last_line": clean_lines[-1][:80] if clean_lines else "",
+                "card_mode": card.mode.value,
+                "card_icon": card.icon,
+                "card_status": card.status_line,
+                "card_preview": card.preview,
             })
         except Exception as e:
             result.append({
@@ -1042,6 +1062,10 @@ async def _get_session_data() -> list[dict]:
                 "managed": s.managed,
                 "last_lines": [],
                 "last_line": f"error: {e}",
+                "card_mode": "shell",
+                "card_icon": "❓",
+                "card_status": "Error",
+                "card_preview": "",
             })
 
     # ── Local shell_wrapper sessions (PTY-only, not in Zellij) ──

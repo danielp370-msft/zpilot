@@ -941,6 +941,8 @@ async def event_stream():
 def _discover_shell_wrapper_sessions(exclude: set[str] | None = None) -> list[dict]:
     """Discover shell_wrapper sessions from /tmp/zpilot/logs/ not already in Zellij."""
     import glob as _glob
+    from ..card_render import render_card
+
     exclude = exclude or set()
     entries = []
     log_dir = "/tmp/zpilot/logs"
@@ -950,40 +952,45 @@ def _discover_shell_wrapper_sessions(exclude: set[str] | None = None) -> list[di
         name = fname.rsplit("--main.log", 1)[0]
         if not name or name in exclude:
             continue
-        # Check if session is still alive: FIFO exists AND a process has it open
         fifo_path = os.path.join(fifo_dir, f"{name}.fifo")
         alive = False
         if os.path.exists(fifo_path):
             try:
-                # Try opening FIFO non-blocking; if no reader, it's dead
                 fd = os.open(fifo_path, os.O_WRONLY | os.O_NONBLOCK)
                 os.close(fd)
                 alive = True
             except OSError:
                 alive = False
-        # Read last few lines for preview
         last_lines: list[str] = []
+        content = ""
         try:
             with open(path, "rb") as f:
                 f.seek(0, 2)
                 size = f.tell()
                 f.seek(max(0, size - 2048))
                 tail = f.read().decode("utf-8", errors="replace")
+                content = _strip_ansi(tail)
                 raw_lines = tail.strip().splitlines()[-3:]
                 last_lines = [_strip_ansi(l)[:80] for l in raw_lines]
         except Exception:
             pass
+        state = "active" if alive else "exited"
+        card = render_card(name=name, content=content, state=state, card_rows=4, card_cols=28)
         entries.append({
             "name": name,
             "node": "local",
-            "state": "active" if alive else "exited",
+            "state": state,
             "idle_seconds": 0,
             "heat": 0.0,
             "is_current": False,
-            "managed": True,  # shell_wrapper sessions are always managed
+            "managed": True,
             "last_lines": last_lines,
             "last_line": last_lines[-1] if last_lines else "",
-            "pty_only": True,  # hint: no Zellij, use /ws/pty/ only
+            "pty_only": True,
+            "card_mode": card.mode.value,
+            "card_icon": card.icon,
+            "card_status": card.status_line,
+            "card_preview": card.preview,
         })
     return entries
 
@@ -1080,28 +1087,37 @@ async def _get_session_data() -> list[dict]:
 
 async def _fetch_remote_sessions_inner(node) -> list[dict]:
     """Fetch sessions from a remote peer via its own /api/sessions endpoint."""
+    from ..card_render import render_card
+
     entries = []
     try:
         data = await node.transport.api_get("/api/sessions", timeout=10.0)
         for s in data.get("sessions", []):
             remote_key = f"{node.name}:{s['name']}"
             last_lines = s.get("last_lines", [])
+            last_line = last_lines[-1][:80] if last_lines else ""
+            content = "\n".join(last_lines) if last_lines else last_line
+            state = s.get("state", "active")
+            card = render_card(name=remote_key, content=content, state=state, card_rows=4, card_cols=28)
             entries.append({
                 "name": remote_key,
                 "node": node.name,
-                "state": s.get("state", "active"),
+                "state": state,
                 "idle_seconds": s.get("idle_seconds", 0),
                 "heat": s.get("heat", 0.0),
                 "is_current": False,
                 "managed": s.get("managed", False),
                 "last_lines": last_lines,
-                "last_line": last_lines[-1][:80] if last_lines else "",
+                "last_line": last_line,
+                "card_mode": card.mode.value,
+                "card_icon": card.icon,
+                "card_status": card.status_line,
+                "card_preview": card.preview,
                 **({"pty_only": True} if s.get("pty_only") else {}),
             })
         return entries
     except (NotImplementedError, ConnectionError):
         pass
-    # Fallback: exec for SSH transport or old remote code
     try:
         res = await node.transport.exec(
             "zellij list-sessions --no-formatting 2>/dev/null", timeout=10.0
@@ -1123,6 +1139,10 @@ async def _fetch_remote_sessions_inner(node) -> list[dict]:
                 "managed": False,
                 "last_lines": [],
                 "last_line": "",
+                "card_mode": "shell",
+                "card_icon": "❓",
+                "card_status": "Remote session",
+                "card_preview": "",
             })
     except Exception:
         pass

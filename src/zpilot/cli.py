@@ -232,7 +232,13 @@ def dashboard() -> None:
     existing = _find_running_web()
     if existing:
         pid, port = existing
-        click.echo(f"🌐 http://localhost:{port}")
+        url = f"http://localhost:{port}"
+        click.echo(f"🌐 {url}")
+        import webbrowser
+        try:
+            webbrowser.open(url)
+        except Exception:
+            pass
         return
 
     # Auto-start
@@ -266,8 +272,16 @@ def dashboard() -> None:
     state_file.write_text(json.dumps({"pid": proc.pid, "port": port, "host": "127.0.0.1", "ssl": False}))
     (pid_dir / "web.pid").write_text(str(proc.pid))
 
-    click.echo(f"🌐 http://localhost:{port}")
+    url = f"http://localhost:{port}"
+    click.echo(f"🌐 {url}")
     click.echo(f"   (started in background, PID {proc.pid})")
+
+    # Try to open browser (silently ignore on headless systems)
+    import webbrowser
+    try:
+        webbrowser.open(url)
+    except Exception:
+        pass
 
 
 @main.command()

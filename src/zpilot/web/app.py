@@ -187,6 +187,32 @@ async def api_pane_content(session_name: str, pane_name: str = "main", lines: in
     }
 
 
+@app.get("/api/session/{session_name:path}/thumbnail.png")
+async def api_session_thumbnail(session_name: str):
+    """Render a PNG thumbnail of the session's terminal screen."""
+    from ..thumbnail import render_thumbnail_from_log
+    import io
+
+    # Handle node:session for remote — strip node prefix for local lookup
+    local_name = session_name
+    if ":" in session_name:
+        _, local_name = session_name.split(":", 1)
+
+    png_bytes = render_thumbnail_from_log(local_name)
+    if not png_bytes:
+        # Return a 1x1 transparent pixel as fallback
+        from PIL import Image
+        buf = io.BytesIO()
+        Image.new("RGBA", (1, 1), (0, 0, 0, 0)).save(buf, format="PNG")
+        png_bytes = buf.getvalue()
+
+    return StreamingResponse(
+        io.BytesIO(png_bytes),
+        media_type="image/png",
+        headers={"Cache-Control": "no-cache, max-age=3"},
+    )
+
+
 @app.post("/api/session/{name}")
 async def api_create_session(name: str, command: str | None = None):
     """Create a new session."""

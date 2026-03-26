@@ -481,6 +481,12 @@
             font-size: 7px; line-height: 1.0; letter-spacing: -0.5px;
             color: var(--accent);
         }
+        .card-thumbnail {
+            width: 100%; border-radius: 4px;
+            image-rendering: pixelated;
+            opacity: 0.9;
+        }
+        .card-thumbnail:hover { opacity: 1; }
         .card-status {
             font-size: 10px; color: var(--text); margin: 2px 0;
             overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
@@ -1133,7 +1139,11 @@
                 const cardStatus = s.card_status || s.state || 'unknown';
                 const cardPreview = s.card_preview || s.last_line || '';
                 const isVisual = s.card_mode === 'visual';
-                const previewClass = isVisual ? 'card-preview visual-preview' : 'card-preview';
+                const thumbUrl = `/api/session/${encodeURIComponent(s.name)}/thumbnail.png?t=${Date.now()}`;
+                const previewHtml = s.managed
+                    ? `<img class="card-thumbnail" src="${thumbUrl}" loading="lazy" onerror="this.style.display='none';this.nextElementSibling.style.display='block'">`
+                      + `<div class="card-preview" style="display:none">${esc(cardPreview)}</div>`
+                    : `<div class="card-preview">${esc(cardPreview)}</div>`;
                 return `<div class="expose-card ${isError ? 'card-error' : ''}" onclick="focusSession('${esc(s.name)}')" data-session="${esc(s.name)}">
                     <div class="card-top">
                         ${isRemote ? `<span class="card-node-tag">${esc(s.node)}</span>` : ''}
@@ -1141,12 +1151,13 @@
                         <span class="card-badge ${badgeClass(s.state)}">${s.state || 'unknown'}</span>
                     </div>
                     <div class="card-status">${esc(cardStatus)}</div>
-                    <div class="${previewClass}">${esc(cardPreview)}</div>
+                    ${previewHtml}
                     <div class="card-meta">
                         ${!s.managed ? '<span class="card-unmanaged-tag">👁 unmanaged</span> · ' : ''}
                         idle ${formatIdle(s.idle_seconds)}
                     </div>
                 </div>`;
+            }).join('');
             }).join('');
         }
 

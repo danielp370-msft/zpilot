@@ -11,7 +11,7 @@ from mcp.server import Server
 from mcp.server.stdio import stdio_server
 from mcp.types import TextContent, Tool
 
-from . import zellij
+from . import ops, zellij
 from .config import load_config
 from .detector import PaneDetector
 from .events import EventBus
@@ -20,64 +20,6 @@ from .nodes import Node, NodeRegistry, load_nodes
 from .monitor import Monitor, NodeHealthTracker, health_check_nodes
 
 log = logging.getLogger("zpilot.mcp")
-
-
-def _parse_session(session: str | None, registry: NodeRegistry | None) -> tuple[Node | None, str | None]:
-    """Parse a session string that may contain a node prefix.
-
-    Accepts:
-      "session_name"        → (None, "session_name")   — local
-      "node:session_name"   → (Node, "session_name")   — remote
-      None                  → (None, None)
-
-    Returns (node_or_none, session_name).
-    If node is None, the session is local.
-    """
-    if not session:
-        return None, None
-    if ":" in session and registry:
-        node_name, sess_name = session.split(":", 1)
-        try:
-            node = registry.get(node_name)
-            if not node.is_local:
-                return node, sess_name
-        except (KeyError, ValueError):
-            pass  # not a known node — treat whole string as session name
-    return None, session
-
-
-async def _remote_zellij(node: Node, zellij_args: str, timeout: float = 15.0) -> str:
-    """Run a zellij command on a remote node and return stdout."""
-    result = await node.transport.exec(f"zellij {zellij_args}", timeout=timeout)
-    if not result.ok:
-        raise RuntimeError(
-            f"zellij {zellij_args} failed on {node.name} (rc={result.returncode}): "
-            f"{result.stderr or result.stdout}"
-        )
-    return result.stdout
-
-
-async def _remote_dump_pane(node: Node, session: str, full: bool = False) -> str:
-    """Dump pane content from a remote node using a temp file.
-    
-    Uses force_pty=True because zellij dump-screen requires a TTY-attached
-    client to communicate with the server process.
-    """
-    import shlex
-    full_flag = "--full" if full else ""
-    safe_session = shlex.quote(session)
-    cmd = (
-        f"TMP=$(mktemp) && "
-        f"zellij --session {safe_session} action dump-screen {full_flag} $TMP && "
-        f"cat $TMP && rm -f $TMP"
-    )
-    result = await node.transport.exec(cmd, timeout=15, force_pty=True)
-    if not result.ok:
-        raise RuntimeError(
-            f"dump-screen failed on {node.name}:{session} (rc={result.returncode}): "
-            f"{result.stderr or result.stdout}"
-        )
-    return result.stdout
 
 
 def create_mcp_server(config: ZpilotConfig | None = None) -> Server:
@@ -428,22 +370,19 @@ async def _dispatch(
 
     if name == "list_nodes":
         reg = registry or NodeRegistry()
+        nodes = ops.list_nodes(reg)
         lines = []
-        for node in reg.all():
-            transport = node.transport_type
-            host = node.host or "(local)"
-            labels = ", ".join(f"{k}={v}" for k, v in node.labels.items()) or "-"
-            lines.append(f"  {node.name}  [{transport}]  {host}  labels: {labels}")
-        return f"Nodes ({len(reg)}):\n" + "\n".join(lines)
+        for n in nodes:
+            labels = ", ".join(f"{k}={v}" for k, v in n["labels"].items()) or "-"
+            lines.append(f"  {n['name']}  [{n['transport']}]  {n['host']}  labels: {labels}")
+        return f"Nodes ({len(nodes)}):\n" + "\n".join(lines)
 
     elif name == "ping_node":
         reg = registry or NodeRegistry()
-        node = reg.get(args["node"])
-        try:
-            alive = await node.transport.is_alive()
-            return f"{'✓' if alive else '✗'} {node.name}: {'reachable' if alive else 'unreachable'}"
-        except Exception as e:
-            return f"✗ {node.name}: {e}"
+        result = await ops.ping_node(reg, args["node"])
+        icon = "✓" if result["reachable"] else "✗"
+        status = "reachable" if result["reachable"] else result.get("error", "unreachable")
+        return f"{icon} {result['node']}: {status}"
 
     elif name == "fleet_status":
         if monitor:
@@ -475,15 +414,8 @@ async def _dispatch(
 
     elif name == "list_siblings":
         reg = registry or NodeRegistry()
-        siblings = []
-        for node in reg.all():
-            info = {
-                "name": node.name,
-                "transport": node.transport_type,
-                "host": node.host or "(local)",
-                "labels": node.labels,
-            }
-            siblings.append(info)
+        nodes = ops.list_nodes(reg)
+        siblings = [{"name": n["name"], "transport": n["transport"], "host": n["host"], "labels": n["labels"]} for n in nodes]
         import json as _json
         return _json.dumps({"siblings": siblings, "count": len(siblings)}, indent=2)
 
@@ -536,40 +468,30 @@ async def _dispatch(
     # ── Original single-node tools (with remote node support) ────
 
     elif name == "list_sessions":
-        sessions = await zellij.list_sessions()
+        sessions = await ops.list_sessions()
         if not sessions:
             return "No Zellij sessions found."
         lines = []
         for s in sessions:
-            marker = " (current)" if s.is_current else ""
-            lines.append(f"  {s.name}{marker}")
+            marker = " (current)" if s["is_current"] else ""
+            lines.append(f"  {s['name']}{marker}")
         return "Sessions:\n" + "\n".join(lines)
 
     elif name == "create_session":
-        session_name = args["name"]
-        layout = args.get("layout")
-        node, sess = _parse_session(session_name, registry)
-        if node:
-            import shlex
-            cmd = f"zellij --session {shlex.quote(sess)} &"
-            await node.transport.exec(cmd, timeout=10)
-            return f"Created session '{sess}' on {node.name}"
-        await zellij.new_session(session_name, layout=layout)
-        return f"Created session '{session_name}'"
+        result = await ops.create_session(args["name"], args.get("layout"), registry)
+        node = result.get("node", "local")
+        return f"Created session '{result['session']}'" + (f" on {node}" if node != "local" else "")
 
     elif name == "kill_session":
-        node, sess = _parse_session(args["name"], registry)
-        if node:
-            import shlex
-            await _remote_zellij(node, f"delete-session {shlex.quote(sess)} --force")
-            return f"Killed session '{sess}' on {node.name}"
-        await zellij.kill_session(args["name"])
-        return f"Killed session '{args['name']}'"
+        result = await ops.kill_session(args["name"], registry)
+        node = result.get("node", "local")
+        return f"Killed session '{result['session']}'" + (f" on {node}" if node != "local" else "")
 
     elif name == "create_pane":
-        node, sess = _parse_session(args.get("session"), registry)
+        # create_pane stays here — Zellij-specific with many options
+        import shlex
+        node, sess = ops.parse_session(args.get("session"), registry)
         if node:
-            import shlex
             safe_sess = shlex.quote(sess) if sess else None
             zj_args = f"--session {safe_sess} action new-pane" if safe_sess else "action new-pane"
             if args.get("direction"):
@@ -578,7 +500,7 @@ async def _dispatch(
                 zj_args += " --floating"
             if args.get("command"):
                 zj_args += f" -- {shlex.quote(args['command'])}"
-            await _remote_zellij(node, zj_args)
+            await ops._remote_zellij(node, zj_args)
             return f"Created pane on {node.name}:{sess or 'current'}"
         await zellij.new_pane(
             session=args.get("session"),
@@ -590,50 +512,22 @@ async def _dispatch(
         return f"Created pane" + (f" '{args.get('name')}'" if args.get("name") else "")
 
     elif name == "read_pane":
-        node, sess = _parse_session(args.get("session"), registry)
-        if node:
-            content = await _remote_dump_pane(node, sess, full=args.get("full", False))
-            return content if content.strip() else "(empty pane)"
-        content = await zellij.dump_pane(
-            session=args.get("session"),
-            full=args.get("full", False),
-        )
-        return content if content else "(empty pane)"
+        content = await ops.read_pane(args.get("session"), args.get("full", False), registry)
+        return content.strip() if content.strip() else "(empty pane)"
 
     elif name == "write_to_pane":
-        node, sess = _parse_session(args.get("session"), registry)
-        if node:
-            import shlex
-            text = args["text"]
-            escaped = shlex.quote(text)
-            safe_sess = shlex.quote(sess) if sess else None
-            zj_args = f"--session {safe_sess} action write-chars {escaped}" if safe_sess else f"action write-chars {escaped}"
-            await _remote_zellij(node, zj_args)
-            detector.record_input(f"{node.name}:{sess}" if sess else node.name, "focused")
-            return f"Sent {len(text)} chars to pane on {node.name}:{sess or 'current'}"
-        await zellij.write_to_pane(args["text"], session=args.get("session"))
-        sess_key = args.get("session", "current")
-        detector.record_input(sess_key, "focused")
-        return f"Sent {len(args['text'])} chars to pane"
+        result = await ops.write_to_pane(args["text"], args.get("session"), detector, registry)
+        node = result.get("node", "local")
+        sess = result.get("session", "current")
+        if node != "local":
+            return f"Sent {result['chars']} chars to pane on {node}:{sess or 'current'}"
+        return f"Sent {result['chars']} chars to pane"
 
     elif name == "run_in_pane":
-        node, sess = _parse_session(args.get("session"), registry)
-        if node:
-            import shlex
-            cmd = args["command"]
-            escaped = shlex.quote(cmd)
-            safe_sess = shlex.quote(sess) if sess else None
-            zj_args = f"--session {safe_sess} action write-chars {escaped}" if safe_sess else f"action write-chars {escaped}"
-            await _remote_zellij(node, zj_args)
-            enter_args = f"--session {safe_sess} action write 10" if safe_sess else "action write 10"
-            await _remote_zellij(node, enter_args)
-            detector.record_input(f"{node.name}:{sess}" if sess else node.name, "focused")
-            return f"Executed on {node.name}:{sess or 'current'}: {cmd}"
-        await zellij.run_command_in_pane(
-            args["command"], session=args.get("session")
-        )
-        sess_key = args.get("session", "current")
-        detector.record_input(sess_key, "focused")
+        result = await ops.run_in_pane(args["command"], args.get("session"), detector, registry)
+        node = result.get("node", "local")
+        if node != "local":
+            return f"Executed on {node}:{result.get('session', 'current')}: {args['command']}"
         return f"Executed: {args['command']}"
 
     elif name == "launch_copilot":
@@ -664,62 +558,26 @@ async def _dispatch(
         return f"Launched {agent_cmd} in {session}:{pane_name}"
 
     elif name == "check_status":
-        session_raw = args["session"]
-        node, sess = _parse_session(session_raw, registry)
-        if node:
-            try:
-                content = await _remote_dump_pane(node, sess, full=True)
-            except Exception as e:
-                return json.dumps({"session": session_raw, "state": "error", "error": str(e)})
-            state = detector.detect(session=session_raw, pane="focused", content=content)
-            idle_secs = detector.get_idle_seconds(session_raw, "focused")
-            last_lines = content.strip().splitlines()[-3:] if content.strip() else []
-            return json.dumps({
-                "session": session_raw,
-                "node": node.name,
-                "state": state.value,
-                "idle_seconds": round(idle_secs, 1),
-                "last_lines": last_lines,
-            }, indent=2)
-        content = await zellij.dump_pane(session=sess)
-        state = detector.detect(session=session_raw, pane="focused", content=content)
-        idle_secs = detector.get_idle_seconds(session_raw, "focused")
-        last_lines = content.strip().splitlines()[-3:] if content.strip() else []
-        return json.dumps({
-            "session": session_raw,
-            "state": state.value,
-            "idle_seconds": round(idle_secs, 1),
-            "last_lines": last_lines,
-        }, indent=2)
+        result = await ops.check_status(args["session"], detector, registry)
+        return json.dumps(result, indent=2)
 
     elif name == "check_all":
-        sessions = await zellij.list_sessions()
+        sessions = await ops.list_sessions()
         if not sessions:
             return "No sessions found."
         results = []
         for s in sessions:
             try:
-                content = await zellij.dump_pane(session=s.name)
-                state = detector.detect(
-                    session=s.name, pane="focused", content=content
-                )
-                idle = detector.get_idle_seconds(s.name, "focused")
-                last_line = ""
-                lines = content.strip().splitlines()
-                if lines:
-                    last_line = lines[-1][:60]
+                status = await ops.check_status(s["name"], detector, registry)
+                last_lines = status.get("last_lines", [])
                 results.append({
-                    "session": s.name,
-                    "state": state.value,
-                    "idle": round(idle, 1),
-                    "last": last_line,
+                    "session": s["name"],
+                    "state": status.get("state", "unknown"),
+                    "idle": status.get("idle_seconds", 0),
+                    "last": last_lines[-1][:60] if last_lines else "",
                 })
             except Exception as e:
-                results.append({
-                    "session": s.name,
-                    "state": "error",
-                    "error": str(e),
-                })
+                results.append({"session": s["name"], "state": "error", "error": str(e)})
         return json.dumps(results, indent=2)
 
     elif name == "recent_events":
@@ -738,85 +596,42 @@ async def _dispatch(
         return "Recent events:\n" + "\n".join(lines)
 
     elif name == "search_pane":
-        import re
-        session_raw = args["session"]
-        pattern = args["pattern"]
-        ctx = args.get("context", 2)
-        node, sess = _parse_session(session_raw, registry)
-        if node:
-            content = await _remote_dump_pane(node, sess, full=True)
-        else:
-            content = await zellij.dump_pane(session=sess, full=True)
-        if not content:
-            return "Pane is empty."
-        all_lines = content.splitlines()
-        try:
-            regex = re.compile(pattern, re.IGNORECASE)
-        except re.error:
-            regex = re.compile(re.escape(pattern), re.IGNORECASE)
-        matches = []
-        for i, line in enumerate(all_lines):
-            if regex.search(line):
-                start = max(0, i - ctx)
-                end = min(len(all_lines), i + ctx + 1)
-                snippet = []
-                for j in range(start, end):
-                    marker = ">>>" if j == i else "   "
-                    snippet.append(f"{marker} {j+1}: {all_lines[j]}")
-                matches.append("\n".join(snippet))
-        if not matches:
-            node_label = f" on {node.name}" if node else ""
-            return f"No matches for '{pattern}' in {session_raw}{node_label} scrollback ({len(all_lines)} lines searched)."
-        header = f"Found {len(matches)} match(es) in {session_raw} ({len(all_lines)} lines):\n"
-        return header + "\n---\n".join(matches[:30])
+        result = await ops.search_pane(
+            args["session"], args["pattern"], args.get("context", 2), registry
+        )
+        if not result["matches"]:
+            return f"No matches for '{args['pattern']}' in {args['session']} ({result['total_lines']} lines searched)."
+        formatted = []
+        for snippet in result["matches"]:
+            lines = []
+            for entry in snippet:
+                marker = ">>>" if entry["match"] else "   "
+                lines.append(f"{marker} {entry['line_num']}: {entry['text']}")
+            formatted.append("\n".join(lines))
+        header = f"Found {len(result['matches'])} match(es) in {args['session']} ({result['total_lines']} lines):\n"
+        return header + "\n---\n".join(formatted[:30])
 
     elif name == "get_output_history":
-        session_raw = args["session"]
-        num_lines = args.get("lines", 50)
-        node, sess = _parse_session(session_raw, registry)
-        if node:
-            content = await _remote_dump_pane(node, sess, full=True)
-        else:
-            content = await zellij.dump_pane(session=sess, full=True)
-        if not content:
+        result = await ops.get_output_history(args["session"], args.get("lines", 50), registry)
+        if not result["lines"]:
             return "(empty pane)"
-        all_lines = content.strip().splitlines()
-        tail = all_lines[-num_lines:]
-        total = len(all_lines)
-        header = f"Last {len(tail)} of {total} lines from {session_raw}:\n"
-        numbered = [f"{total - len(tail) + i + 1}: {line}" for i, line in enumerate(tail)]
+        total = result["total_lines"]
+        tail = result["lines"]
+        header = f"Last {len(tail)} of {total} lines from {args['session']}:\n"
+        offset = total - len(tail)
+        numbered = [f"{offset + i + 1}: {line}" for i, line in enumerate(tail)]
         return header + "\n".join(numbered)
 
     elif name == "send_keys":
-        session_raw = args["session"]
-        keys = args["keys"]
-        node, sess = _parse_session(session_raw, registry)
-        if node:
-            import shlex
-            safe_sess = shlex.quote(sess) if sess else None
-            results = []
-            for key_name in keys:
-                key_bytes = zellij.SPECIAL_KEYS.get(key_name)
-                if key_bytes is not None:
-                    for byte_val in key_bytes:
-                        zj_args = f"--session {safe_sess} action write {byte_val}" if safe_sess else f"action write {byte_val}"
-                        await _remote_zellij(node, zj_args)
-                    results.append(f"✓ {key_name}")
-                else:
-                    available = ", ".join(sorted(zellij.SPECIAL_KEYS.keys()))
-                    results.append(f"✗ {key_name} (unknown — available: {available})")
-            detector.record_input(session_raw, "focused")
-            return f"Sent {len(keys)} key(s) to {session_raw}:\n" + "\n".join(results)
-        results = []
-        for key_name in keys:
-            ok = await zellij.send_special_key(key_name, session=sess)
-            if ok:
-                results.append(f"✓ {key_name}")
+        result = await ops.send_keys(args["session"], args["keys"], detector, registry)
+        lines = []
+        for r in result["results"]:
+            if r["ok"]:
+                lines.append(f"✓ {r['key']}")
             else:
                 available = ", ".join(sorted(zellij.SPECIAL_KEYS.keys()))
-                results.append(f"✗ {key_name} (unknown — available: {available})")
-        detector.record_input(session_raw, "focused")
-        return f"Sent {len(keys)} key(s) to {session_raw}:\n" + "\n".join(results)
+                lines.append(f"✗ {r['key']} ({r.get('error', 'unknown')} — available: {available})")
+        return f"Sent {len(args['keys'])} key(s) to {args['session']}:\n" + "\n".join(lines)
 
     else:
         return f"Unknown tool: {name}"

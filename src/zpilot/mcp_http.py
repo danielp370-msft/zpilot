@@ -472,27 +472,12 @@ def create_http_app(config: ZpilotConfig | None = None) -> FastAPI:
     @app.post("/api/exec")
     async def api_exec(request: Request):
         """Execute a command on this node."""
+        from . import ops
         body = await request.json()
         command = body.get("command", "")
         timeout = body.get("timeout", 30.0)
-
-        try:
-            proc = await asyncio.create_subprocess_shell(
-                command,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
-            return {
-                "returncode": proc.returncode or 0,
-                "stdout": stdout.decode(errors="replace"),
-                "stderr": stderr.decode(errors="replace"),
-            }
-        except asyncio.TimeoutError:
-            proc.kill()
-            return {"returncode": -1, "stdout": "", "stderr": "Command timed out"}
-        except Exception as e:
-            return {"returncode": -1, "stdout": "", "stderr": str(e)}
+        result = await ops.exec_command(command, timeout=timeout)
+        return result
 
     @app.post("/api/upload")
     async def api_upload(request: Request):
@@ -565,100 +550,16 @@ def create_http_app(config: ZpilotConfig | None = None) -> FastAPI:
         Returns a list of sessions with name, state, and preview lines.
         Peers call this to discover what sessions are available on this node.
         """
-        from .zellij import list_sessions, dump_pane
-        seen: set[str] = set()
-        try:
-            sessions = await list_sessions()
-        except Exception:
-            sessions = []
-
+        from . import ops
         from .detector import PaneDetector
         from .models import ZpilotConfig
-        import re as _re
-        _ansi_re = _re.compile(r'\x1b\[[0-9;]*[a-zA-Z]|\x1b\([A-B]')
+
         _det = getattr(api_sessions, '_detector', None)
         if _det is None:
             _det = PaneDetector(ZpilotConfig())
             api_sessions._detector = _det
 
-        result = []
-        for s in sessions:
-            seen.add(s.name)
-            if s.exited:
-                result.append({
-                    "name": s.name,
-                    "is_current": s.is_current,
-                    "managed": s.managed,
-                    "state": "exited",
-                    "idle_seconds": 0,
-                    "heat": 0.0,
-                    "last_lines": [],
-                    "last_line": "",
-                })
-                continue
-            entry = {
-                "name": s.name,
-                "is_current": s.is_current,
-                "managed": s.managed,
-                "state": "active",
-            }
-            try:
-                content = await dump_pane(session=s.name, tail_lines=3)
-                clean = _ansi_re.sub('', content) if content else ""
-                state = _det.detect(s.name, "main", clean)
-                entry["state"] = state.value
-                entry["idle_seconds"] = round(_det.get_idle_seconds(s.name, "main"), 1)
-                entry["heat"] = round(_det.get_heat(s.name, "main"), 3)
-                lines = clean.strip().splitlines()[-3:] if clean.strip() else []
-                entry["last_lines"] = lines
-                entry["last_line"] = lines[-1][:80] if lines else ""
-            except Exception:
-                entry["idle_seconds"] = 0
-                entry["heat"] = 0.0
-                entry["last_lines"] = []
-                entry["last_line"] = ""
-            result.append(entry)
-
-        # Also discover shell_wrapper-only sessions (PTY logs without Zellij)
-        import glob as _glob
-        log_dir = "/tmp/zpilot/logs"
-        fifo_dir = "/tmp/zpilot/fifos"
-        for path in _glob.glob(os.path.join(log_dir, "*--main.log")):
-            fname = os.path.basename(path)
-            name = fname.rsplit("--main.log", 1)[0]
-            if not name or name in seen:
-                continue
-            has_fifo = os.path.exists(os.path.join(fifo_dir, f"{name}.fifo"))
-            alive = False
-            if has_fifo:
-                try:
-                    fd = os.open(os.path.join(fifo_dir, f"{name}.fifo"), os.O_WRONLY | os.O_NONBLOCK)
-                    os.close(fd)
-                    alive = True
-                except OSError:
-                    alive = False
-            last_lines: list[str] = []
-            try:
-                with open(path, "rb") as f:
-                    f.seek(0, 2)
-                    sz = f.tell()
-                    f.seek(max(0, sz - 2048))
-                    tail = f.read().decode("utf-8", errors="replace")
-                    last_lines = tail.strip().splitlines()[-3:]
-            except Exception:
-                pass
-            result.append({
-                "name": name,
-                "is_current": False,
-                "managed": True,
-                "last_lines": last_lines,
-                "last_line": last_lines[-1][:80] if last_lines else "",
-                "state": "active" if alive else "exited",
-                "idle_seconds": 0,
-                "heat": 0.0,
-                "pty_only": True,
-            })
-
+        result = await ops.list_sessions_full(_det)
         return {"node": socket.gethostname(), "sessions": result}
 
     @app.get("/api/peers")
@@ -790,65 +691,28 @@ def create_http_app(config: ZpilotConfig | None = None) -> FastAPI:
     @app.post("/api/session/{name}/resize")
     async def api_session_resize(name: str, request: Request):
         """Resize a local session's terminal. Symmetric endpoint."""
-        from .zellij import resize_pane
+        from . import ops
         body = await request.json()
         cols = int(body.get("cols", 80))
         rows = int(body.get("rows", 24))
-        try:
-            resize_pane(name, cols, rows)
-        except Exception:
-            # FIFO not available — fallback to stty via zellij
-            import shlex
-            safe_name = shlex.quote(name)
-            stty_cmd = (
-                f"zellij --session {safe_name} action write-chars "
-                f"{shlex.quote(f'stty rows {rows} cols {cols}; clear')}"
-            )
-            enter_cmd = f"zellij --session {safe_name} action write 10"
-            proc = await asyncio.create_subprocess_shell(
-                f"{stty_cmd} && {enter_cmd}",
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-            await proc.communicate()
+        await ops.resize_session(name, cols, rows)
         return {"status": "resized", "session": name, "cols": cols, "rows": rows}
 
     @app.post("/api/session/{name}/send")
     async def api_session_send(name: str, request: Request):
         """Send text to a local session. Symmetric endpoint."""
-        import shlex
+        from . import ops
         body = await request.json()
         text = body.get("text", "")
-        safe_name = shlex.quote(name)
-        safe_text = shlex.quote(text)
-        cmd = f"zellij --session {safe_name} action write-chars {safe_text}"
-        enter = f"zellij --session {safe_name} action write 10"
-        proc = await asyncio.create_subprocess_shell(
-            f"{cmd} && {enter}",
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        await proc.communicate()
+        await ops.run_in_pane(name, text)
         return {"status": "sent", "session": name}
 
     @app.post("/api/session/{name}/keys")
     async def api_session_keys(name: str, request: Request):
         """Send special keys to a local session. Symmetric endpoint."""
-        import shlex
-        from zpilot.keys import map_key_to_zellij
-
+        from . import ops
         keys = await request.json()  # expects a JSON array of key names
-        safe_name = shlex.quote(name)
-        for key_name in keys:
-            zj_key = map_key_to_zellij(key_name)
-            if zj_key:
-                cmd = f"zellij --session {safe_name} action write {zj_key}"
-                proc = await asyncio.create_subprocess_shell(
-                    cmd,
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
-                )
-                await proc.communicate()
+        await ops.send_keys(name, keys)
         return {"status": "keys_sent", "session": name, "count": len(keys)}
 
     # ── Screen content (rendered) ──
@@ -860,50 +724,9 @@ def create_http_app(config: ZpilotConfig | None = None) -> FastAPI:
         Returns ANSI-colored terminal output via pyte rendering,
         with fallback to plain zellij dump-screen.
         """
-        import shlex
-
-        safe_name = shlex.quote(name)
-
-        # Primary: pyte-based rendering (ANSI color from log files)
-        try:
-            from zpilot.zellij import dump_screen_rendered
-
-            content = await dump_screen_rendered(name, cols=cols, rows=rows)
-            if content and content.strip():
-                return {"session": name, "content": content, "method": "pyte"}
-        except Exception:
-            pass
-
-        # Fallback: zellij dump-screen (plain text)
-        try:
-            import tempfile
-
-            with tempfile.NamedTemporaryFile(
-                suffix=".txt", delete=False
-            ) as tmp:
-                tmp_path = tmp.name
-            cmd = (
-                f"zellij --session {safe_name} action dump-screen {tmp_path}"
-            )
-            proc = await asyncio.create_subprocess_shell(
-                cmd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-            await proc.communicate()
-            import os
-
-            content = ""
-            if os.path.exists(tmp_path):
-                with open(tmp_path) as f:
-                    content = f.read()
-                os.unlink(tmp_path)
-            if content:
-                return {"session": name, "content": content, "method": "dump"}
-        except Exception:
-            pass
-
-        return {"session": name, "content": "", "method": "none"}
+        from . import ops
+        result = await ops.get_screen(name, cols=cols, rows=rows)
+        return {"session": name, "content": result.get("content", ""), "method": result.get("method", "none")}
 
     # ── Raw PTY WebSocket ──
 

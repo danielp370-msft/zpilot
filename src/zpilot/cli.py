@@ -245,7 +245,9 @@ def dashboard() -> None:
     import json
     import subprocess
 
-    port = _find_free_port()
+    preferred = _last_port() or 8095
+    port = _find_free_port(preferred)
+    _save_last_port(port)
     pid_dir = _user_pid_dir()
 
     # Start daemon if needed
@@ -336,12 +338,30 @@ def _find_free_port(preferred: int = 8095) -> int:
     """Return preferred port if free, otherwise pick a random free port."""
     import socket
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         try:
             s.bind(("127.0.0.1", preferred))
             return preferred
         except OSError:
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             s.bind(("127.0.0.1", 0))
             return s.getsockname()[1]
+
+
+def _last_port() -> int | None:
+    """Read the last port used (survives zpilot down)."""
+    port_file = _user_pid_dir() / "last_port"
+    if not port_file.exists():
+        return None
+    try:
+        return int(port_file.read_text().strip())
+    except Exception:
+        return None
+
+
+def _save_last_port(port: int) -> None:
+    """Persist last-used port so restarts reuse it."""
+    (_user_pid_dir() / "last_port").write_text(str(port))
 
 
 PID_DIR = _user_pid_dir  # kept as callable for back-compat in down()
@@ -375,9 +395,11 @@ def up(host: str, port: int | None, no_ssl: bool, open_browser: bool) -> None:
         click.echo(f"   Stop with: zpilot down")
         return
 
-    # Pick port
+    # Pick port — prefer last-used port for URL stability
     if port is None:
-        port = _find_free_port()
+        preferred = _last_port() or 8095
+        port = _find_free_port(preferred)
+    _save_last_port(port)
 
     # Start daemon if not already running
     from .daemon import is_daemon_running as _daemon_running

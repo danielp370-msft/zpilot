@@ -1478,6 +1478,7 @@
             const src = new EventSource('/api/stream');
 
             src.addEventListener('status', (e) => {
+                lastSSEEvent = Date.now();
                 const sessions = JSON.parse(e.data);
                 const oldStates = {};
                 sessionsList.forEach(s => oldStates[s.name] = s.state);
@@ -1544,6 +1545,7 @@
             };
 
             src.onopen = () => {
+                lastSSEEvent = Date.now();
                 sseFailCount = 0;
                 document.getElementById('sse-dot').className = 'sse-dot live';
                 document.getElementById('sse-label').textContent = 'Live';
@@ -1551,6 +1553,24 @@
                 sseRetryDelay = 1000;
             };
         }
+
+        // Heartbeat: if no SSE event received in 15s, consider disconnected
+        let lastSSEEvent = Date.now();
+        const _origConnectSSE = connectSSE;
+        connectSSE = function() {
+            _origConnectSSE();
+        };
+        setInterval(() => {
+            const elapsed = Date.now() - lastSSEEvent;
+            if (elapsed > 15000 && sseFailCount === 0) {
+                // SSE connection may be silently dead
+                sseFailCount = 2;
+                document.getElementById('sse-dot').className = 'sse-dot';
+                document.getElementById('sse-label').textContent = 'Disconnected';
+                document.getElementById('disconnect-overlay').classList.add('visible');
+                document.getElementById('disco-retry').textContent = 'Connection lost — waiting for backend…';
+            }
+        }, 5000);
 
         // ══════════════════════════════════════════
         // KEYBOARD SHORTCUTS

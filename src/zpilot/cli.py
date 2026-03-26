@@ -201,7 +201,9 @@ def status() -> None:
                         lines = content.strip().splitlines()
                         if lines:
                             last = lines[-1][:50]
-                        click.echo(f"    {si} {s.name}{marker}  [{state.value}]  idle={idle:.0f}s  {last}")
+                        heat = detector.get_heat(s.name, "focused")
+                        heat_bar = "🌡" + "█" * round(heat * 5) + "░" * (5 - round(heat * 5))
+                        click.echo(f"    {si} {s.name}{marker}  [{state.value}]  idle={idle:.0f}s  {heat_bar}  {last}")
                     except Exception as e:
                         click.echo(f"    ❓ {s.name}  [error: {e}]")
             elif nh.sessions:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import math
 import re
 import time
 
@@ -22,6 +23,7 @@ class PaneDetector:
         self._last_change_time: dict[str, float] = {}
         self._last_state: dict[str, PaneState] = {}
         self._last_input_time: dict[str, float] = {}  # track user input activity
+        self._change_timestamps: dict[str, list[float]] = {}  # rolling window of change times
 
     def _key(self, session: str, pane: str) -> str:
         return f"{session}:{pane}"
@@ -50,6 +52,12 @@ class PaneDetector:
         if changed:
             self._last_hash[key] = content_hash
             self._last_change_time[key] = now
+            # Track change timestamps for heat calculation (keep last 60s)
+            ts = self._change_timestamps.setdefault(key, [])
+            ts.append(now)
+            # Prune old entries (older than 60s)
+            cutoff = now - 60.0
+            self._change_timestamps[key] = [t for t in ts if t > cutoff]
 
         last_change = self._last_change_time.get(key, now)
         last_input = self._last_input_time.get(key, 0)
@@ -119,3 +127,34 @@ class PaneDetector:
         """Get the last detected state for a pane."""
         key = self._key(session, pane)
         return self._last_state.get(key, PaneState.UNKNOWN)
+
+    def get_heat(self, session: str, pane: str) -> float:
+        """Get activity heat for a pane (0.0 = cold/idle, 1.0 = hot/busy).
+
+        Heat is based on two factors:
+        - Recency: how recently content changed (exponential decay, half-life 10s)
+        - Burstiness: how many changes in the last 60s (more changes = hotter)
+
+        This gives a smooth "temperature" that rises when a session is
+        actively producing output and decays gradually when it stops.
+        """
+        key = self._key(session, pane)
+        now = time.time()
+
+        last_change = self._last_change_time.get(key)
+        if last_change is None:
+            return 0.0
+
+        # Factor 1: Recency — exponential decay with 10s half-life
+        age = now - last_change
+        recency = math.exp(-0.693 * age / 10.0)  # 0.693 = ln(2)
+
+        # Factor 2: Burstiness — changes per minute in rolling window
+        timestamps = self._change_timestamps.get(key, [])
+        recent = [t for t in timestamps if t > now - 60.0]
+        # Normalize: 0 changes = 0.0, 10+ changes/min = 1.0
+        burst = min(len(recent) / 10.0, 1.0)
+
+        # Combine: weighted blend (recency matters more for responsiveness)
+        heat = 0.7 * recency + 0.3 * burst
+        return round(min(heat, 1.0), 2)

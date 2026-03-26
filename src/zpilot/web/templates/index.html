@@ -328,6 +328,10 @@
             color: var(--text-dim); line-height: 1;
         }
         .dock-pill .pill-close:hover { opacity: 1; color: var(--red); }
+        .dock-pill .pill-heat {
+            font-size: 9px; opacity: 0.6; margin-left: 2px;
+            font-family: monospace; line-height: 1;
+        }
         .dock-pill.exited { opacity: 0.5; }
         .dock-pill.exited .pill-name { text-decoration: line-through; }
         .dock-pill .pill-node {
@@ -335,13 +339,14 @@
             color: var(--cyan, #66d9ef);
         }
 
-        /* Status dot colors */
+        /* Status dot colors — used as fallback, heat overrides inline */
         .dot-idle { background: var(--green); }
         .dot-active { background: var(--yellow); }
         .dot-waiting { background: var(--orange); }
-        .dot-error { background: var(--red); }
+        .dot-error { background: var(--red); animation: pulse-error 1s infinite; }
         .dot-exited { background: var(--text-dim); opacity: 0.5; }
         .dot-unknown { background: var(--text-dim); }
+        @keyframes pulse-error { 0%,100% { opacity: 1; } 50% { opacity: 0.4; } }
 
         /* Pill pulse animation on state change */
         @keyframes pill-pulse {
@@ -664,6 +669,7 @@
             </div>
             <div class="focus-header-right">
                 <span id="fh-idle" style="font-size:10px;color:var(--text-dim)"></span>
+                <span id="fh-heat" style="font-size:10px;margin-left:6px;font-family:monospace"></span>
             </div>
         </div>
         <div class="focus-panels" id="focus-panels">
@@ -809,6 +815,27 @@
         function dotClass(state) { return 'dot-' + (state || 'unknown'); }
         function badgeClass(state) { return 'badge-' + (state || 'unknown'); }
 
+        // Heat → color: cold(grey) → cool(green) → warm(yellow) → hot(orange) → fire(red)
+        function heatColor(heat) {
+            if (heat == null) return null;
+            const h = Math.max(0, Math.min(1, heat));
+            // HSL: 0 heat = grey (0,0%,50%), low = green(120°), mid = yellow(60°), high = red(0°)
+            if (h < 0.05) return 'hsl(0, 0%, 45%)';   // cold grey
+            // Map 0.05–1.0 to hue 120(green) → 0(red)
+            const hue = 120 * (1 - (h - 0.05) / 0.95);
+            const sat = 70 + 30 * h;  // more saturated when hotter
+            const lit = 45 + 10 * h;  // slightly brighter when hotter
+            return `hsl(${hue.toFixed(0)}, ${sat.toFixed(0)}%, ${lit.toFixed(0)}%)`;
+        }
+
+        // Compact heat indicator: 3-char bar using Unicode blocks
+        function heatBar(heat) {
+            if (heat == null || heat < 0.05) return '';
+            const blocks = ['░','▒','▓','█'];
+            const level = Math.min(3, Math.floor(heat * 4));
+            return blocks[level];
+        }
+
         function formatIdle(seconds) {
             if (seconds == null) return '';
             if (seconds < 60) return seconds + 's';
@@ -854,12 +881,16 @@
                 if (attentionSet.has(s.name)) pill.classList.add('attention');
                 pill.dataset.session = s.name;
 
+                const hc = heatColor(s.heat);
+                const dotStyle = (s.state !== 'error' && s.state !== 'exited' && hc)
+                    ? ` style="background:${hc}"` : '';
                 const dotOrClose = s.state === 'exited'
                     ? `<span class="pill-close" title="Dismiss">✕</span>`
-                    : `<span class="pill-dot ${dotClass(s.state)}"></span>`;
+                    : `<span class="pill-dot ${dotClass(s.state)}"${dotStyle}></span>`;
                 pill.innerHTML = dotOrClose +
                     (s.node && s.node !== 'local' ? `<span class="pill-node">${esc(s.node)}:</span>` : '') +
                     `<span class="pill-name">${esc(s.node && s.node !== 'local' ? s.name.split(':').slice(1).join(':') : s.name)}</span>` +
+                    (s.heat != null ? `<span class="pill-heat" title="heat: ${s.heat}">${heatBar(s.heat)}</span>` : '') +
                     (!s.managed ? '<span class="pill-eye">👁</span>' : '');
 
                 pill.onclick = (e) => {
@@ -942,12 +973,24 @@
             const primary = focusedSessions[0];
             const s = sessionsData[primary];
             if (s) {
-                document.getElementById('fh-dot').className = 'fh-dot ' + dotClass(s.state);
+                const hc = heatColor(s.heat);
+                const fhDot = document.getElementById('fh-dot');
+                fhDot.className = 'fh-dot ' + dotClass(s.state);
+                if (hc && s.state !== 'error' && s.state !== 'exited') fhDot.style.background = hc;
+                else fhDot.style.background = '';
                 const isRemote = s.node && s.node !== 'local';
                 const displayName = isRemote ? s.name.split(':').slice(1).join(':') : s.name;
                 document.getElementById('fh-name').textContent = (isRemote ? s.node + ':' : '') + displayName;
                 document.getElementById('fh-state').textContent = s.state || 'unknown';
                 document.getElementById('fh-idle').textContent = 'idle ' + formatIdle(s.idle_seconds);
+                const heatEl = document.getElementById('fh-heat');
+                if (s.heat != null) {
+                    const pct = Math.round(s.heat * 100);
+                    heatEl.textContent = `🌡${pct}%`;
+                    heatEl.style.color = hc || '';
+                } else {
+                    heatEl.textContent = '';
+                }
                 const unm = document.getElementById('fh-unmanaged');
                 unm.style.display = s.managed ? 'none' : '';
                 topSession.textContent = (isRemote ? s.node + ':' : '') + displayName;
@@ -1521,9 +1564,19 @@
                 if (focusedSessions.length > 0) {
                     const ps = sessionsData[focusedSessions[0]];
                     if (ps) {
-                        document.getElementById('fh-dot').className = 'fh-dot ' + dotClass(ps.state);
+                        const phc = heatColor(ps.heat);
+                        const fhDot = document.getElementById('fh-dot');
+                        fhDot.className = 'fh-dot ' + dotClass(ps.state);
+                        if (phc && ps.state !== 'error' && ps.state !== 'exited') fhDot.style.background = phc;
+                        else fhDot.style.background = '';
                         document.getElementById('fh-state').textContent = ps.state || 'unknown';
                         document.getElementById('fh-idle').textContent = 'idle ' + formatIdle(ps.idle_seconds);
+                        const heatEl = document.getElementById('fh-heat');
+                        if (ps.heat != null) {
+                            const pct = Math.round(ps.heat * 100);
+                            heatEl.textContent = `🌡${pct}%`;
+                            heatEl.style.color = phc || '';
+                        }
                         document.getElementById('fh-unmanaged').style.display = ps.managed ? 'none' : '';
                     }
                     // If focused session disappeared, unfocus

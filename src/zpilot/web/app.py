@@ -178,6 +178,7 @@ async def api_pane_content(session_name: str, pane_name: str = "main", lines: in
         "pane": pane_name,
         "state": state.value,
         "idle_seconds": round(detector.get_idle_seconds(session_name, "main"), 1),
+        "heat": detector.get_heat(session_name, "main"),
         "content": clean,
         "lines": clean.strip().splitlines()[-lines:] if clean.strip() else [],
     }
@@ -1015,6 +1016,7 @@ async def _get_session_data() -> list[dict]:
                 "node": "local",
                 "state": state.value,
                 "idle_seconds": round(idle, 1),
+                "heat": detector.get_heat(s.name, "main"),
                 "is_current": s.is_current,
                 "managed": s.managed,
                 "last_lines": clean_lines,

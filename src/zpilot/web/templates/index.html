@@ -1554,7 +1554,7 @@
             const isManaged = s && s.managed;
             const isFocused = focusedSessions.includes(name);
             document.getElementById('ctx-focus').style.display = isFocused ? 'none' : '';
-            document.getElementById('ctx-split').style.display = (isFocused || isExited) ? 'none' : '';
+            document.getElementById('ctx-split').style.display = isExited ? 'none' : '';
             document.getElementById('ctx-adopt').style.display = (s && !isManaged && !isExited) ? '' : 'none';
             document.getElementById('ctx-dismiss').style.display = isExited ? '' : 'none';
             document.getElementById('ctx-close').style.display = isExited ? 'none' : '';
@@ -1580,7 +1580,8 @@
             document.getElementById('ctx-menu').classList.remove('visible');
             const name = ctxTarget;
             ctxTarget = null;
-            // If in MC mode, switch back to normal first
+
+            // Exit MC mode if active
             if (mcMode > 0) {
                 mcMode = 0;
                 const mc = document.getElementById('mc-layout');
@@ -1588,14 +1589,23 @@
                 document.getElementById('focus-header').style.display = '';
                 document.getElementById('focus-panels').style.display = '';
                 document.getElementById('btn-split').textContent = '◫';
+                // Destroy MC terminal
+                if (focusedSessions.length) destroyTerminal(focusedSessions[0]);
                 document.getElementById('mc-term-body').innerHTML = '';
             }
-            // Enable native split with current + new session
+
+            // Enable native split: current session left, new session right
             splitMode = true;
             document.getElementById('btn-split').classList.add('active');
             if (focusedSessions.length === 0) {
                 focusedSessions = [name];
-            } else if (!focusedSessions.includes(name)) {
+            } else if (focusedSessions[0] === name) {
+                // Same session — just enable split with it alone (will show one pane)
+                focusedSessions = [name];
+            } else if (focusedSessions.includes(name)) {
+                // Already in the list, make it secondary
+                focusedSessions = [focusedSessions[0], name];
+            } else {
                 focusedSessions = [focusedSessions[0], name];
             }
             renderFocus();

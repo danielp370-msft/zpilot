@@ -722,8 +722,11 @@
     <div class="dock" id="dock">
         <!-- Pills rendered by JS -->
         <div class="dock-create-form" id="dock-create-form">
+            <select class="dock-create-input" id="dock-create-node" style="width:90px;margin-right:4px">
+                <option value="">local</option>
+            </select>
             <input class="dock-create-input" id="dock-create-input" placeholder="session name"
-                   onkeydown="if(event.key==='Enter')submitCreate();if(event.key==='Escape')cancelCreate()">
+                   onkeydown="if(event.key==='Enter')submitCreate();if(event.key==='Escape')cancelCreate()" style="width:100px">
             <button class="dock-create-submit" onclick="submitCreate()">Create</button>
             <button class="dock-create-cancel" onclick="cancelCreate()">✕</button>
         </div>
@@ -1311,9 +1314,27 @@
         // ══════════════════════════════════════════
         // SESSION CREATE (dock inline form)
         // ══════════════════════════════════════════
-        function showCreate() {
+        async function showCreate() {
             document.getElementById('dock-create-form').classList.add('visible');
             document.getElementById('dock-add').style.display = 'none';
+            const sel = document.getElementById('dock-create-node');
+            sel.innerHTML = '<option value="">local</option>';
+            // Populate from nodes API
+            try {
+                const resp = await fetch('/api/nodes');
+                const nodes = await resp.json();
+                (nodes || []).forEach(n => {
+                    if (n.name && n.name !== 'local') {
+                        sel.innerHTML += `<option value="${esc(n.name)}">${esc(n.name)}</option>`;
+                    }
+                });
+            } catch(e) {
+                // Fallback: derive from session list
+                const remoteNodes = new Set(sessionsList.filter(s => s.node && s.node !== 'local').map(s => s.node));
+                remoteNodes.forEach(n => { sel.innerHTML += `<option value="${esc(n)}">${esc(n)}</option>`; });
+            }
+            document.getElementById('dock-create-input').focus();
+        }
             const inp = document.getElementById('dock-create-input');
             inp.value = '';
             inp.focus();
@@ -1324,12 +1345,15 @@
         }
         async function submitCreate() {
             const inp = document.getElementById('dock-create-input');
+            const nodeSel = document.getElementById('dock-create-node');
+            const node = nodeSel.value;
             const name = inp.value.trim();
             if (!name) return;
+            const fullName = node ? `${node}:${name}` : name;
             cancelCreate();
             try {
-                await fetch(`/api/session/${encodeURIComponent(name)}`, { method: 'POST' });
-                setTimeout(() => focusSession(name), 1500);
+                await fetch(`/api/session/${encodeURIComponent(fullName)}`, { method: 'POST' });
+                setTimeout(() => focusSession(fullName), 1500);
             } catch(e) { console.error('Create failed:', e); }
         }
         // Expose for onclick

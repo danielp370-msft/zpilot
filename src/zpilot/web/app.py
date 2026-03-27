@@ -67,6 +67,36 @@ async def _start_remote_fetcher():
         asyncio.create_task(_remote_fetcher_loop())
 
 
+# ── MCP endpoint (local copilot connection) ──
+
+_mcp_manager = None
+
+@app.on_event("startup")
+async def _start_mcp_endpoint():
+    """Wire MCP Streamable HTTP so local copilots can connect to this dashboard."""
+    import inspect
+    global _mcp_manager
+    from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
+    from .mcp_server import create_mcp_server
+
+    mcp_server = create_mcp_server(config)
+    _mcp_manager = StreamableHTTPSessionManager(
+        app=mcp_server, json_response=False, stateless=False,
+    )
+    # Start the session manager
+    await _mcp_manager.__aenter__()
+
+    # Detect API: MCP >= 1.26 uses ASGI mount, older uses Request handler
+    sig = inspect.signature(_mcp_manager.handle_request)
+    params = list(sig.parameters.keys())
+    if "scope" in params:
+        app.mount("/mcp", app=_mcp_manager.handle_request)
+    else:
+        @app.api_route("/mcp", methods=["GET", "POST", "DELETE"])
+        async def _mcp_endpoint(request: Request):
+            return await _mcp_manager.handle_request(request)
+
+
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request):
     """Main dashboard page."""

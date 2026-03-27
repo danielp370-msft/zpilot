@@ -336,6 +336,94 @@ def create_mcp_server(config: ZpilotConfig | None = None) -> Server:
                 description="Get health summary of all nodes — latency, state, last_seen",
                 inputSchema={"type": "object", "properties": {}},
             ),
+            # ── Fleet orchestration tools ──
+            Tool(
+                name="dispatch",
+                description="Dispatch a command to a session on any node (fire-and-forget). Creates session if needed. Use node:session for remote.",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "session": {"type": "string", "description": "Target session (e.g. 'build' or 'dandroid1:build')"},
+                        "command": {"type": "string", "description": "Command to run"},
+                    },
+                    "required": ["session", "command"],
+                },
+            ),
+            Tool(
+                name="launch_agent",
+                description="Launch a program in a new session on any node. Use for starting copilots, build scripts, monitors, etc.",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "session": {"type": "string", "description": "Session name (e.g. 'dandroid1:builder')"},
+                        "command": {"type": "string", "description": "Command to launch (e.g. 'copilot-cli', 'make -j16')"},
+                    },
+                    "required": ["session", "command"],
+                },
+            ),
+            # ── Remote file ops ──
+            Tool(
+                name="read_remote_file",
+                description="Read a file from any node in the fleet. Returns file content as text.",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "node": {"type": "string", "description": "Node name (e.g. 'dandroid1', 'local')"},
+                        "path": {"type": "string", "description": "File path on the remote node"},
+                    },
+                    "required": ["node", "path"],
+                },
+            ),
+            Tool(
+                name="write_remote_file",
+                description="Write content to a file on any node. Creates parent directories as needed.",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "node": {"type": "string", "description": "Node name"},
+                        "path": {"type": "string", "description": "File path on the remote node"},
+                        "content": {"type": "string", "description": "File content to write"},
+                    },
+                    "required": ["node", "path", "content"],
+                },
+            ),
+            # ── Flow tools ──
+            Tool(
+                name="flow_list",
+                description="List available data flows on a node. Shows TTY sessions, file transfers, and pipe streams.",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "node": {"type": "string", "description": "Node name (default: local)", "default": "local"},
+                    },
+                },
+            ),
+            Tool(
+                name="flow_push",
+                description="Push a local file to a remote node's staging area. File lands in /tmp/zpilot/flows/{name}/",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "node": {"type": "string", "description": "Target node"},
+                        "name": {"type": "string", "description": "Flow name (alphanumeric/dash)"},
+                        "path": {"type": "string", "description": "Local file path to push"},
+                    },
+                    "required": ["node", "name", "path"],
+                },
+            ),
+            Tool(
+                name="flow_fetch",
+                description="Fetch a flow from a remote node and save locally. Downloads to /tmp/zpilot/flows/{name}/ by default.",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "node": {"type": "string", "description": "Source node"},
+                        "name": {"type": "string", "description": "Flow name"},
+                        "save_to": {"type": "string", "description": "Local path to save (default: staging area)"},
+                    },
+                    "required": ["node", "name"],
+                },
+            ),
         ]
 
     # ── Tool implementations ────────────────────────────────────
@@ -632,6 +720,143 @@ async def _dispatch(
                 available = ", ".join(sorted(zellij.SPECIAL_KEYS.keys()))
                 lines.append(f"✗ {r['key']} ({r.get('error', 'unknown')} — available: {available})")
         return f"Sent {len(args['keys'])} key(s) to {args['session']}:\n" + "\n".join(lines)
+
+    # ── Fleet orchestration ─────────────────────────────────────
+
+    elif name == "dispatch":
+        session = args["session"]
+        command = args["command"]
+        try:
+            await ops.create_session(session, registry=registry)
+            import asyncio as _aio
+            await _aio.sleep(1)
+        except Exception:
+            pass  # session may already exist
+        await ops.run_in_pane(command, session=session, detector=detector, registry=registry)
+        return f"Dispatched to {session}: {command}"
+
+    elif name == "launch_agent":
+        session = args["session"]
+        command = args["command"]
+        await ops.create_session(session, registry=registry)
+        import asyncio as _aio
+        await _aio.sleep(1.5)
+        await ops.run_in_pane(command, session=session, detector=detector, registry=registry)
+        return f"Launched '{command}' in session {session}"
+
+    # ── Remote file ops ─────────────────────────────────────────
+
+    elif name == "read_remote_file":
+        node_name = args["node"]
+        path = args["path"]
+        reg = registry or NodeRegistry()
+        node = reg.get(node_name)
+        try:
+            content = await node.transport.read_file(path)
+            return f"File: {path} ({len(content)} bytes)\n\n{content}"
+        except Exception as e:
+            return f"Error reading {path} from {node_name}: {e}"
+
+    elif name == "write_remote_file":
+        node_name = args["node"]
+        path = args["path"]
+        content = args["content"]
+        reg = registry or NodeRegistry()
+        node = reg.get(node_name)
+        try:
+            await node.transport.write_file(path, content)
+            return f"Written {len(content)} bytes to {path} on {node_name}"
+        except Exception as e:
+            return f"Error writing to {node_name}:{path}: {e}"
+
+    # ── Flow tools ──────────────────────────────────────────────
+
+    elif name == "flow_list":
+        node_name = args.get("node", "local")
+        if node_name == "local":
+            from .flows import flow_registry, register_tty_sessions
+            register_tty_sessions(flow_registry)
+            flows = flow_registry.list_flows()
+            lines = [f"Flows on local ({len(flows)}):"]
+            for f in flows:
+                lines.append(f"  {f.name}  [{f.flow_type.value}]  {f.state.value}  {f.size} bytes")
+            return "\n".join(lines)
+        else:
+            reg = registry or NodeRegistry()
+            node = reg.get(node_name)
+            try:
+                data = await node.transport.api_get("/api/flow/list", timeout=10.0)
+                flows = data.get("flows", [])
+                lines = [f"Flows on {node_name} ({len(flows)}):"]
+                for f in flows:
+                    lines.append(f"  {f['name']}  [{f['type']}]  {f['state']}  {f.get('size', 0)} bytes")
+                return "\n".join(lines)
+            except Exception as e:
+                return f"Error listing flows on {node_name}: {e}"
+
+    elif name == "flow_push":
+        import os
+        node_name = args["node"]
+        flow_name = args["name"]
+        local_path = args["path"]
+        if not os.path.exists(local_path):
+            return f"Local file not found: {local_path}"
+        reg = registry or NodeRegistry()
+        node = reg.get(node_name)
+        try:
+            import httpx
+            file_size = os.path.getsize(local_path)
+            transport = node.transport
+            headers = transport._headers() if hasattr(transport, '_headers') else {}
+            verify = getattr(transport, '_verify', lambda: False)
+            ssl_v = verify() if callable(verify) else verify
+            base = getattr(transport, 'base_url', '')
+            async with httpx.AsyncClient(verify=ssl_v, timeout=300.0) as client:
+                with open(local_path, "rb") as fh:
+                    resp = await client.post(
+                        f"{base}/api/flow/push/{flow_name}",
+                        content=fh.read(),
+                        headers={**headers, "Content-Type": "application/octet-stream"},
+                    )
+                if resp.status_code == 200:
+                    data = resp.json()
+                    return f"Pushed {local_path} to {node_name}:{flow_name} ({data.get('size', 0)} bytes, sha256={data.get('sha256', '?')[:12]}...)"
+                return f"Push failed: HTTP {resp.status_code}: {resp.text[:200]}"
+        except Exception as e:
+            return f"Error pushing to {node_name}: {e}"
+
+    elif name == "flow_fetch":
+        from pathlib import Path
+        node_name = args["node"]
+        flow_name = args["name"]
+        save_to = args.get("save_to")
+        reg = registry or NodeRegistry()
+        node = reg.get(node_name)
+        try:
+            import httpx
+            transport = node.transport
+            headers = transport._headers() if hasattr(transport, '_headers') else {}
+            verify = getattr(transport, '_verify', lambda: False)
+            ssl_v = verify() if callable(verify) else verify
+            base = getattr(transport, 'base_url', '')
+            async with httpx.AsyncClient(verify=ssl_v, timeout=300.0) as client:
+                resp = await client.get(
+                    f"{base}/api/flow/pull/{flow_name}",
+                    headers=headers,
+                )
+                if resp.status_code != 200:
+                    return f"Fetch failed: HTTP {resp.status_code}: {resp.text[:200]}"
+                data = resp.content
+                sha = resp.headers.get("X-Flow-SHA256", "")
+                if save_to:
+                    dest = Path(save_to)
+                else:
+                    dest = Path(f"/tmp/zpilot/flows/{flow_name}/data")
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                dest.write_bytes(data)
+                return f"Fetched {flow_name} from {node_name}: {len(data)} bytes → {dest}\nSHA256: {sha}"
+        except Exception as e:
+            return f"Error fetching from {node_name}: {e}"
 
     else:
         return f"Unknown tool: {name}"

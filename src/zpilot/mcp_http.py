@@ -792,6 +792,139 @@ def create_http_app(config: ZpilotConfig | None = None) -> FastAPI:
         return Response(content=png_bytes, media_type="image/png",
                         headers={"Cache-Control": "no-cache, max-age=3"})
 
+    # ── Session thumbnail ──
+
+    @app.get("/api/session/{name}/thumbnail.png")
+    async def api_session_thumbnail(name: str):
+        """Render a PNG thumbnail of the session's terminal screen."""
+        import io
+        from .thumbnail import render_thumbnail_from_log
+        png_bytes = render_thumbnail_from_log(name)
+        if not png_bytes:
+            from PIL import Image
+            buf = io.BytesIO()
+            Image.new("RGBA", (1, 1), (0, 0, 0, 0)).save(buf, format="PNG")
+            png_bytes = buf.getvalue()
+        from starlette.responses import Response
+        return Response(content=png_bytes, media_type="image/png",
+                        headers={"Cache-Control": "no-cache, max-age=3"})
+
+    # ── Flow endpoints ──
+
+    from .flows import flow_registry, FlowType, FlowState, register_tty_sessions, stream_file_chunks, compute_sha256, STAGING_DIR, CHUNK_SIZE
+
+    @app.get("/api/flow/list")
+    async def api_flow_list():
+        """List all flows on this node (includes auto-registered TTY sessions)."""
+        register_tty_sessions(flow_registry)
+        flows = flow_registry.list_flows()
+        return {"flows": [f.to_dict() for f in flows]}
+
+    @app.post("/api/flow/offer")
+    async def api_flow_offer(request: Request):
+        """Register a flow for others to pull. Body: {name, path?, type?, ttl?}"""
+        body = await request.json()
+        name = body.get("name", "")
+        source = body.get("path")
+        ftype = FlowType(body.get("type", "file"))
+        ttl = body.get("ttl", 3600)
+        result = flow_registry.offer(name, ftype, source_path=source, ttl=ttl,
+                                     metadata=body.get("metadata", {}))
+        if isinstance(result, str):
+            return JSONResponse({"error": result}, status_code=400)
+        return result.to_dict()
+
+    @app.get("/api/flow/pull/{name}")
+    async def api_flow_pull(name: str):
+        """Pull (download) a flow's data. Streams file content."""
+        from starlette.responses import StreamingResponse as SR
+        flow = flow_registry.get(name)
+        if not flow:
+            return JSONResponse({"error": f"Flow not found: {name}"}, status_code=404)
+        if flow.state == FlowState.EXPIRED:
+            return JSONResponse({"error": "Flow expired"}, status_code=410)
+        if not flow.source_path or not os.path.exists(flow.source_path):
+            return JSONResponse({"error": "Flow source not available"}, status_code=404)
+
+        flow.state = FlowState.STREAMING
+        file_size = os.path.getsize(flow.source_path)
+
+        async def _stream():
+            transferred = 0
+            try:
+                with open(flow.source_path, "rb") as f:
+                    while True:
+                        chunk = f.read(CHUNK_SIZE)
+                        if not chunk:
+                            break
+                        transferred += len(chunk)
+                        flow.transferred = transferred
+                        yield chunk
+                flow.state = FlowState.COMPLETED
+                flow.sha256 = compute_sha256(flow.source_path)
+            except Exception as e:
+                flow_registry.fail(name, str(e))
+
+        return SR(
+            _stream(),
+            media_type="application/octet-stream",
+            headers={
+                "Content-Length": str(file_size),
+                "X-Flow-Name": name,
+                "X-Flow-SHA256": compute_sha256(flow.source_path),
+            },
+        )
+
+    @app.post("/api/flow/push/{name}")
+    async def api_flow_push(name: str, request: Request):
+        """Push (upload) data into a flow's staging area."""
+        err = flow_registry.validate_name(name)
+        if err:
+            return JSONResponse({"error": err}, status_code=400)
+
+        # Create receiving flow
+        flow = flow_registry.receive(name, FlowType.FILE)
+        if isinstance(flow, str):
+            return JSONResponse({"error": flow}, status_code=400)
+
+        stage_dir = flow_registry.staging_path(name)
+        stage_dir.mkdir(parents=True, exist_ok=True)
+        dest_file = stage_dir / "data"
+
+        # Stream body to staging file
+        hasher = __import__("hashlib").sha256()
+        total = 0
+        try:
+            with open(dest_file, "wb") as f:
+                async for chunk in request.stream():
+                    if total + len(chunk) > flow_registry._flows[name].ttl * 1024 * 1024 * 5:
+                        # Safety: crude size limit
+                        pass
+                    f.write(chunk)
+                    hasher.update(chunk)
+                    total += len(chunk)
+                    flow.transferred = total
+            flow.size = total
+            flow.sha256 = hasher.hexdigest()
+            flow.state = FlowState.COMPLETED
+            flow.source_path = str(dest_file)
+            return {
+                "status": "received",
+                "name": name,
+                "size": total,
+                "sha256": flow.sha256,
+                "staging_path": str(stage_dir),
+            }
+        except Exception as e:
+            flow_registry.fail(name, str(e))
+            return JSONResponse({"error": str(e)}, status_code=500)
+
+    @app.delete("/api/flow/{name}")
+    async def api_flow_delete(name: str):
+        """Remove a flow and its staging data."""
+        ok = flow_registry.remove(name)
+        return {"removed": ok, "name": name}
+
     # ── Raw PTY WebSocket ──
 
     @app.websocket("/ws/pty/{session_name:path}")

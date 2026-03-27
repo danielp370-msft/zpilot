@@ -1222,25 +1222,32 @@
 
         function focusSession(name) {
             if (exposeOpen) toggleExpose();
+
+            if (mcMode > 0) {
+                // Mission control mode: update primary and refresh terminal
+                focusedSessions = [name];
+                attentionSet.delete(name);
+                ensureMCTerminal();
+                renderMCCards();
+                renderDock();
+                return;
+            }
+
             if (splitMode && focusedSessions.length > 0 && focusedSessions[0] !== name) {
                 if (focusedSessions.length < 2) {
                     focusedSessions.push(name);
                 } else if (!focusedSessions.includes(name)) {
                     focusedSessions[1] = name;
                 } else if (focusedSessions[1] === name) {
-                    // Already secondary — swap to primary
                     focusedSessions = [name, focusedSessions[0]];
                 }
-                // If it's already primary, do nothing
             } else {
-                if (focusedSessions[0] === name) return; // already focused
+                if (focusedSessions[0] === name && !splitMode) return;
                 focusedSessions = splitMode && focusedSessions.length >= 2
                     ? [name, focusedSessions[0]] : [name];
             }
 
-            // Clear attention
             attentionSet.delete(name);
-
             renderFocus();
             renderDock();
         }

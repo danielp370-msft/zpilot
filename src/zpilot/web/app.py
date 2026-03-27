@@ -46,12 +46,34 @@ async def _remote_fetcher_loop():
     while True:
         try:
             all_remote: list[dict] = []
-            tasks = [_fetch_remote_sessions_inner(n) for n in node_registry.remote_nodes()]
+            remote_nodes = list(node_registry.remote_nodes())
+            tasks = [_fetch_remote_sessions_inner(n) for n in remote_nodes]
+            seen_nodes: set[str] = set()
             if tasks:
                 results = await asyncio.gather(*tasks, return_exceptions=True)
                 for r in results:
                     if isinstance(r, list):
+                        for entry in r:
+                            seen_nodes.add(entry.get("node", ""))
                         all_remote.extend(r)
+            # Add offline placeholder for nodes that returned nothing
+            for n in remote_nodes:
+                if n.name not in seen_nodes:
+                    all_remote.append({
+                        "name": f"{n.name}:(offline)",
+                        "node": n.name,
+                        "state": "error",
+                        "idle_seconds": 0,
+                        "heat": 0.0,
+                        "is_current": False,
+                        "managed": False,
+                        "last_lines": [],
+                        "last_line": "Node unreachable",
+                        "card_mode": "shell",
+                        "card_icon": "⚠️",
+                        "card_status": "Node offline",
+                        "card_preview": "",
+                    })
             async with _remote_cache_lock:
                 _remote_cache = all_remote
                 _remote_cache_age = time.monotonic()

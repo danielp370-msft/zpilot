@@ -77,7 +77,7 @@ async def _start_mcp_endpoint():
     import inspect
     global _mcp_manager
     from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
-    from .mcp_server import create_mcp_server
+    from ..mcp_server import create_mcp_server
 
     mcp_server = create_mcp_server(config)
     _mcp_manager = StreamableHTTPSessionManager(

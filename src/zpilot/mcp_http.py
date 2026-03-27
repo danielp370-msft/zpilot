@@ -775,6 +775,23 @@ def create_http_app(config: ZpilotConfig | None = None) -> FastAPI:
         except Exception as e:
             return JSONResponse({"error": str(e)}, status_code=500)
 
+    # ── Session thumbnail ──
+
+    @app.get("/api/session/{name}/thumbnail.png")
+    async def api_session_thumbnail(name: str):
+        """Render a PNG thumbnail of the session's terminal screen."""
+        import io
+        from .thumbnail import render_thumbnail_from_log
+        png_bytes = render_thumbnail_from_log(name)
+        if not png_bytes:
+            from PIL import Image
+            buf = io.BytesIO()
+            Image.new("RGBA", (1, 1), (0, 0, 0, 0)).save(buf, format="PNG")
+            png_bytes = buf.getvalue()
+        from starlette.responses import Response
+        return Response(content=png_bytes, media_type="image/png",
+                        headers={"Cache-Control": "no-cache, max-age=3"})
+
     # ── Raw PTY WebSocket ──
 
     @app.websocket("/ws/pty/{session_name:path}")

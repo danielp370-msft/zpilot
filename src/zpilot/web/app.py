@@ -189,18 +189,51 @@ async def api_pane_content(session_name: str, pane_name: str = "main", lines: in
 
 @app.get("/api/session/{session_name:path}/thumbnail.png")
 async def api_session_thumbnail(session_name: str):
-    """Render a PNG thumbnail of the session's terminal screen."""
+    """Render a PNG thumbnail of the session's terminal screen.
+
+    For local sessions: render from log file via pyte + Pillow.
+    For remote (node:session): proxy to the node's /api/session/{name}/thumbnail.png.
+    """
     from ..thumbnail import render_thumbnail_from_log
     import io
 
-    # Handle node:session for remote — strip node prefix for local lookup
-    local_name = session_name
+    # Handle node:session for remote
     if ":" in session_name:
-        _, local_name = session_name.split(":", 1)
+        node_name, remote_session = session_name.split(":", 1)
+        try:
+            node = node_registry.get(node_name)
+            if not node.is_local:
+                # Proxy thumbnail from remote node
+                import httpx
+                try:
+                    url = f"/api/session/{remote_session}/thumbnail.png"
+                    # Use transport's api_get won't work for binary, use httpx directly
+                    opts = getattr(node, 'transport_opts', {}) or {}
+                    base = opts.get('url', '') or getattr(node.transport, 'base_url', '')
+                    if base:
+                        base = base.rstrip('/')
+                        headers = {}
+                        if hasattr(node.transport, '_headers'):
+                            headers = node.transport._headers()
+                        verify = getattr(node.transport, '_verify', lambda: False)
+                        ssl_verify = verify() if callable(verify) else verify
+                        async with httpx.AsyncClient(verify=ssl_verify, timeout=10.0) as client:
+                            resp = await client.get(f"{base}{url}", headers=headers)
+                            if resp.status_code == 200 and resp.headers.get('content-type', '').startswith('image/'):
+                                return StreamingResponse(
+                                    io.BytesIO(resp.content),
+                                    media_type="image/png",
+                                    headers={"Cache-Control": "no-cache, max-age=3"},
+                                )
+                except Exception:
+                    pass
+        except (KeyError, ValueError):
+            pass
+        # Fallback: try local with the remote session name
+        session_name = remote_session
 
-    png_bytes = render_thumbnail_from_log(local_name)
+    png_bytes = render_thumbnail_from_log(session_name)
     if not png_bytes:
-        # Return a 1x1 transparent pixel as fallback
         from PIL import Image
         buf = io.BytesIO()
         Image.new("RGBA", (1, 1), (0, 0, 0, 0)).save(buf, format="PNG")

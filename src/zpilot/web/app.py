@@ -1107,10 +1107,19 @@ async def _get_session_data() -> list[dict]:
             heat = detector.get_heat(s.name, "main")
             clean_lines = clean.strip().splitlines()[-3:] if clean.strip() else []
 
+            # Use pyte-rendered screen for card detection (sees actual display)
+            card_content = clean
+            try:
+                rendered = await zellij.dump_screen_rendered(s.name, cols=80, rows=24)
+                if rendered and rendered.strip():
+                    card_content = _strip_ansi(rendered)
+            except Exception:
+                pass
+
             # Adaptive card rendering
             velocity_tracker.update(s.name, len(content) if content else 0)
             card = render_card(
-                name=s.name, content=clean,
+                name=s.name, content=card_content,
                 state=state.value, idle_secs=idle, heat=heat,
                 card_rows=6, card_cols=30,
             )

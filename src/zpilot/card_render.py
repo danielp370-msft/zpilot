@@ -54,14 +54,14 @@ _COPILOT_PROGRAMS = {
 
 # Build/CI command prefixes
 _BUILD_PATTERNS = [
-    (re.compile(r"(npm|yarn|pnpm)\s+(run\s+)?(build|test|install|start|dev)"), "📦"),
-    (re.compile(r"(make|cmake|cargo|go)\s+(build|test|install|run)"), "🔨"),
-    (re.compile(r"(pytest|python.*-m\s+pytest|jest|mocha|rspec)"), "🧪"),
-    (re.compile(r"(pip|pip3)\s+install"), "📦"),
-    (re.compile(r"(gcc|g\+\+|clang|rustc|javac)"), "🔨"),
-    (re.compile(r"(docker|podman)\s+(build|run|compose)"), "🐳"),
-    (re.compile(r"(terraform|pulumi|cdk)\s+(apply|plan|deploy)"), "☁️"),
-    (re.compile(r"(git)\s+(push|pull|fetch|clone|rebase|merge)"), "📤"),
+    (re.compile(r"(?:npm|yarn|pnpm)\s+(?:run\s+)?(?:build|test|install|start|dev)\b"), "📦"),
+    (re.compile(r"(?:make|cmake|cargo|go)\s+(?:build|test|install|run)\b"), "🔨"),
+    (re.compile(r"(?:pytest|python.*-m\s+pytest|jest|mocha|rspec)\b"), "🧪"),
+    (re.compile(r"(?:pip|pip3)\s+install\b"), "📦"),
+    (re.compile(r"\b(?:gcc|g\+\+|clang|rustc|javac)\s+-"), "🔨"),
+    (re.compile(r"(?:docker|podman)\s+(?:build|run|compose)\b"), "🐳"),
+    (re.compile(r"(?:terraform|pulumi|cdk)\s+(?:apply|plan|deploy)\b"), "☁️"),
+    (re.compile(r"\bgit\s+(?:push|pull|fetch|clone|rebase|merge)\b"), "📤"),
 ]
 
 # Screen content patterns that indicate full-screen TUI
@@ -90,6 +90,8 @@ _COPILOT_PATTERNS = {
         re.compile(r"⏎\s*to send|Press Enter|waiting for input", re.I),
         re.compile(r"Copilot is ready", re.I),
         re.compile(r"^>\s*$"),
+        re.compile(r"Type @.*mention|Describe a task", re.I),
+        re.compile(r"GitHub Copilot v\d", re.I),
     ],
     "error": [
         re.compile(r"Error:.*(?:tool|agent|copilot)", re.I),

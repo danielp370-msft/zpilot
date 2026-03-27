@@ -934,6 +934,10 @@
             const s = JSON.parse(localStorage.getItem(STORAGE_KEY));
             if (s) Object.assign(settings, s);
         } catch(e) {}
+        // Restore dismissed set from saved settings
+        if (Array.isArray(settings.dismissed)) {
+            settings.dismissed.forEach(n => dismissedSet.add(n));
+        }
         function saveSettings() {
             settings.focused = focusedSessions[0] || null;
             settings.focused2 = focusedSessions[1] || null;
@@ -1268,22 +1272,21 @@
             const grid = document.getElementById('expose-grid');
             let sorted = [...sessionsList];
 
-            if (settings.groupByNode) {
-                // Group by node, then sort within each group
-                sorted.sort((a, b) => {
-                    const na = a.node || 'local', nb = b.node || 'local';
-                    if (na === 'local' && nb !== 'local') return -1;
-                    if (na !== 'local' && nb === 'local') return 1;
-                    if (na !== nb) return na.localeCompare(nb);
-                    return a.name.localeCompare(b.name);
-                });
-            } else {
-                sorted.sort((a, b) => {
-                    const ap = statePriority(a.state), bp = statePriority(b.state);
-                    if (ap !== bp) return ap - bp;
-                    return a.name.localeCompare(b.name);
-                });
-            }
+            // Always order by node: local first, then remote alpha, offline nodes last
+            // Within each node, sort by state priority then name
+            const nodeOrder = (node) => {
+                if (!node || node === 'local') return '0_local';
+                // Check if node has any non-error sessions (online)
+                const hasLive = sorted.some(s => (s.node || 'local') === node && s.state !== 'error');
+                return (hasLive ? '1_' : '2_') + node;
+            };
+            sorted.sort((a, b) => {
+                const oa = nodeOrder(a.node), ob = nodeOrder(b.node);
+                if (oa !== ob) return oa.localeCompare(ob);
+                const ap = statePriority(a.state), bp = statePriority(b.state);
+                if (ap !== bp) return ap - bp;
+                return a.name.localeCompare(b.name);
+            });
 
             const currentNames = new Set(sorted.map(s => s.name));
             const existingCards = {};
@@ -1301,17 +1304,19 @@
             const ver = _exposeVersion;
             let lastNode = null;
             sorted.forEach(s => {
-                // Insert node header when group changes (only in group-by-node mode)
-                if (settings.groupByNode) {
-                    const node = s.node || 'local';
-                    if (node !== lastNode) {
-                        lastNode = node;
-                        const hdr = document.createElement('div');
-                        hdr.className = 'expose-node-header';
-                        const count = sorted.filter(x => (x.node || 'local') === node).length;
-                        hdr.textContent = `${node === 'local' ? '● local' : '● ' + node} — ${count} session${count !== 1 ? 's' : ''}`;
-                        grid.appendChild(hdr);
-                    }
+                // Always show node headers
+                const node = s.node || 'local';
+                if (node !== lastNode) {
+                    lastNode = node;
+                    const hdr = document.createElement('div');
+                    hdr.className = 'expose-node-header';
+                    const count = sorted.filter(x => (x.node || 'local') === node).length;
+                    const isOffline = sorted.filter(x => (x.node || 'local') === node).every(x => x.state === 'error');
+                    const icon = isOffline ? '○' : '●';
+                    const suffix = isOffline ? ' (offline)' : '';
+                    hdr.textContent = `${icon} ${node} — ${count} session${count !== 1 ? 's' : ''}${suffix}`;
+                    if (isOffline) hdr.style.opacity = '0.5';
+                    grid.appendChild(hdr);
                 }
                 const isError = s.state === 'error';
                 const isExited = s.state === 'exited';
@@ -1631,6 +1636,9 @@
         // Dismiss exited session (remove from view, clean up files)
         async function dismissSession(name) {
             dismissedSet.add(name);
+            // Persist dismissed set
+            settings.dismissed = [...dismissedSet];
+            saveSettings();
             try {
                 await fetch(`/api/session/${encodeURIComponent(name)}`, { method: 'DELETE' });
             } catch(e) { /* ignore — might already be gone */ }
@@ -1642,6 +1650,7 @@
             delete sessionsData[name];
             sessionsList = sessionsList.filter(s => s.name !== name);
             renderDock();
+            if (exposeOpen) renderExpose();
         }
         window.dismissSession = dismissSession;
 
@@ -1971,12 +1980,8 @@
                 const oldStates = {};
                 sessionsList.forEach(s => oldStates[s.name] = s.state);
 
-                // Un-dismiss sessions that came back alive; keep dismissed exited ones hidden
-                sessions.forEach(s => {
-                    if (dismissedSet.has(s.name) && s.state !== 'exited') {
-                        dismissedSet.delete(s.name);
-                    }
-                });
+                // Keep dismissed sessions hidden — only un-dismiss if user
+                // explicitly focuses them again (not automatically)
                 const visible = sessions.filter(s => !dismissedSet.has(s.name));
 
                 visible.sort((a, b) => a.name.localeCompare(b.name));

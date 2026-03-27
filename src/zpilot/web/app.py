@@ -21,7 +21,44 @@ from ..events import EventBus
 from ..models import PaneState
 from ..nodes import NodeRegistry, load_nodes
 
-app = FastAPI(title="zpilot", description="Mission Control for AI Coding Sessions")
+import inspect as _inspect
+from contextlib import asynccontextmanager
+
+from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
+from ..mcp_server import create_mcp_server
+
+
+@asynccontextmanager
+async def _lifespan(application: FastAPI):
+    """Manage startup/shutdown: remote fetcher + MCP session manager."""
+    # Start remote session fetcher
+    fetcher_task = asyncio.create_task(_remote_fetcher_loop())
+
+    # Start MCP session manager
+    mcp_server = create_mcp_server(config)
+    mcp_mgr = StreamableHTTPSessionManager(
+        app=mcp_server, json_response=False, stateless=False,
+    )
+    async with mcp_mgr.run():
+        # Mount /mcp endpoint
+        sig = _inspect.signature(mcp_mgr.handle_request)
+        if "scope" in list(sig.parameters.keys()):
+            application.mount("/mcp", app=mcp_mgr.handle_request)
+        else:
+            @application.api_route("/mcp", methods=["GET", "POST", "DELETE"])
+            async def _mcp_endpoint(request: Request):
+                return await mcp_mgr.handle_request(request)
+
+        yield
+
+    fetcher_task.cancel()
+
+
+app = FastAPI(
+    title="zpilot",
+    description="Mission Control for AI Coding Sessions",
+    lifespan=_lifespan,
+)
 
 TEMPLATES_DIR = Path(__file__).parent / "templates"
 STATIC_DIR = Path(__file__).parent / "static"
@@ -38,7 +75,6 @@ node_registry = NodeRegistry(load_nodes())
 _remote_cache: list[dict] = []
 _remote_cache_lock = asyncio.Lock()
 _remote_cache_age: float = 0.0  # time.monotonic() of last successful fetch
-_remote_fetcher_started = False
 
 async def _remote_fetcher_loop():
     """Background task: fetch remote sessions every 5s, cache result."""
@@ -80,24 +116,6 @@ async def _remote_fetcher_loop():
         except Exception as e:
             logging.getLogger("zpilot.web").debug(f"Remote fetch error: {e}")
         await asyncio.sleep(5)
-
-@app.on_event("startup")
-async def _start_remote_fetcher():
-    global _remote_fetcher_started
-    if not _remote_fetcher_started:
-        _remote_fetcher_started = True
-        asyncio.create_task(_remote_fetcher_loop())
-
-
-# ── MCP endpoint (local copilot connection) ──
-
-_mcp_manager = None
-_mcp_run_ctx = None
-
-# NOTE: /mcp endpoint on the web dashboard is deferred — the MCP session
-# manager requires lifespan-based setup which conflicts with on_event.
-# For now, copilots connect to zpilot via serve-http (:8222) not the
-# web dashboard (:8095). This will be wired up in a lifespan refactor.
 
 
 @app.get("/", response_class=HTMLResponse)

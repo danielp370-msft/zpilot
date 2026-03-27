@@ -160,6 +160,39 @@
             flex: 1; display: flex; flex-direction: column;
             overflow: hidden; position: relative;
         }
+        /* Mission control layout */
+        .mc-layout {
+            display: none; flex: 1; overflow: hidden;
+        }
+        .mc-layout.active { display: flex; }
+        .mc-cards-panel {
+            width: 280px; min-width: 180px; max-width: 50%;
+            overflow-y: auto; background: var(--bg);
+            border-right: 1px solid var(--border); padding: 8px;
+        }
+        .mc-cards-grid {
+            display: grid; grid-template-columns: 1fr; gap: 6px;
+        }
+        .mc-cards-grid .expose-card { min-height: 60px; cursor: pointer; }
+        .mc-cards-grid .card-thumbnail { height: 50px; }
+        .mc-cards-grid .card-preview { max-height: 2.6em; font-size: 8px; }
+        .mc-cards-grid .expose-card.card-focused { border-color: var(--accent); background: var(--card-hover); }
+        .mc-terminal-panel { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+        .mc-divider {
+            width: 5px; cursor: col-resize; background: var(--border);
+            flex-shrink: 0; transition: background 0.15s;
+        }
+        .mc-divider:hover, .mc-divider.dragging { background: var(--accent); }
+        .mc-layout.mc-right .mc-cards-panel { order: 2; border-right: none; border-left: 1px solid var(--border); }
+        .mc-layout.mc-right .mc-divider { order: 1; }
+        .mc-layout.mc-right .mc-terminal-panel { order: 0; }
+        .mc-term-header {
+            display: flex; align-items: center; gap: 8px;
+            padding: 4px 12px; height: 28px; min-height: 28px;
+            background: var(--panel-bg); border-bottom: 1px solid var(--border);
+            font-size: 12px; color: var(--text); font-weight: 600;
+        }
+        .mc-term-body { flex: 1; overflow: hidden; }
         .focus-header {
             display: flex; align-items: center; justify-content: space-between;
             padding: 4px 12px; height: 28px; min-height: 28px;
@@ -664,6 +697,69 @@
             .dock-pill .pill-name { max-width: 160px; }
             .expose-grid { grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); }
         }
+
+        /* ── MISSION CONTROL LAYOUT ───────────────── */
+        .mission-control {
+            display: flex;
+            flex: 1;
+            overflow: hidden;
+        }
+        .mc-cards-panel {
+            width: 280px;
+            min-width: 200px;
+            max-width: 50%;
+            overflow-y: auto;
+            background: var(--bg);
+            border-right: 1px solid var(--border);
+            padding: 8px;
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+        }
+        .mc-cards-panel .expose-card {
+            min-height: 80px;
+        }
+        .mc-cards-panel .card-thumbnail {
+            height: 60px;
+        }
+        .mc-cards-panel .expose-node-header {
+            grid-column: auto;
+            font-size: 11px;
+            padding: 4px 0 2px;
+        }
+        .mc-cards-grid {
+            display: grid;
+            grid-template-columns: 1fr;
+            gap: 6px;
+        }
+        .mc-terminal-panel {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+        .mc-divider {
+            width: 4px;
+            cursor: col-resize;
+            background: var(--border);
+            transition: background 0.15s;
+            flex-shrink: 0;
+        }
+        .mc-divider:hover, .mc-divider.dragging {
+            background: var(--accent);
+        }
+        /* Right-side cards variant */
+        .mission-control.mc-right .mc-cards-panel {
+            order: 2;
+            border-right: none;
+            border-left: 1px solid var(--border);
+        }
+        .mission-control.mc-right .mc-divider { order: 1; }
+        .mission-control.mc-right .mc-terminal-panel { order: 0; }
+        .expose-card.card-selected {
+            border-color: var(--accent);
+            background: var(--card-hover);
+        }
     </style>
 </head>
 <body>
@@ -698,6 +794,15 @@
             <div class="focus-header-right">
                 <span id="fh-idle" style="font-size:10px;color:var(--text-dim)"></span>
                 <span id="fh-heat" style="font-size:10px;margin-left:6px;font-family:monospace"></span>
+            </div>
+        </div>
+        <!-- Mission control layout (hidden by default) -->
+        <div class="mc-layout" id="mc-layout">
+            <div class="mc-cards-panel" id="mc-cards"><div class="mc-cards-grid" id="mc-cards-grid"></div></div>
+            <div class="mc-divider" id="mc-divider"></div>
+            <div class="mc-terminal-panel" id="mc-terminal">
+                <div class="mc-term-header" id="mc-term-header">Select a session</div>
+                <div class="mc-term-body" id="mc-term-body"></div>
             </div>
         </div>
         <div class="focus-panels" id="focus-panels">
@@ -1262,16 +1367,141 @@
         // ══════════════════════════════════════════
         // SPLIT
         // ══════════════════════════════════════════
+        let mcMode = 0; // 0=off, 1=cards-left, 2=cards-right
         function toggleSplit() {
-            splitMode = !splitMode;
-            document.getElementById('btn-split').classList.toggle('active', splitMode);
-            if (!splitMode && focusedSessions.length > 1) {
-                const keep = focusedSessions[0];
-                focusedSessions = [keep];
+            mcMode = (mcMode + 1) % 3;
+            const mc = document.getElementById('mc-layout');
+            const focusHeader = document.getElementById('focus-header');
+            const focusPanels = document.getElementById('focus-panels');
+            const btn = document.getElementById('btn-split');
+
+            if (mcMode === 0) {
+                mc.classList.remove('active', 'mc-right');
+                focusHeader.style.display = '';
+                focusPanels.style.display = '';
+                btn.classList.remove('active');
+                btn.textContent = '◫';
+                splitMode = false;
+                renderFocus();
+            } else {
+                mc.classList.add('active');
+                mc.classList.toggle('mc-right', mcMode === 2);
+                focusHeader.style.display = 'none';
+                focusPanels.style.display = 'none';
+                btn.classList.add('active');
+                btn.textContent = mcMode === 1 ? '◧' : '◨';
+                splitMode = false;
+                renderMCCards();
+                ensureMCTerminal();
             }
-            renderFocus();
             saveSettings();
         }
+
+        function renderMCCards() {
+            const grid = document.getElementById('mc-cards-grid');
+            if (!grid) return;
+            let sorted = [...sessionsList];
+            if (settings.groupByNode) {
+                sorted.sort((a, b) => {
+                    const na = a.node || 'local', nb = b.node || 'local';
+                    if (na === 'local' && nb !== 'local') return -1;
+                    if (na !== 'local' && nb === 'local') return 1;
+                    if (na !== nb) return na.localeCompare(nb);
+                    return a.name.localeCompare(b.name);
+                });
+            } else {
+                sorted.sort((a, b) => a.name.localeCompare(b.name));
+            }
+            grid.innerHTML = '';
+            let lastNode = null;
+            sorted.forEach(s => {
+                if (settings.groupByNode) {
+                    const node = s.node || 'local';
+                    if (node !== lastNode) {
+                        lastNode = node;
+                        const hdr = document.createElement('div');
+                        hdr.className = 'expose-node-header';
+                        const count = sorted.filter(x => (x.node || 'local') === node).length;
+                        hdr.textContent = '\u25cf ' + node + ' \u2014 ' + count;
+                        grid.appendChild(hdr);
+                    }
+                }
+                const isRemote = s.node && s.node !== 'local';
+                const displayName = isRemote ? s.name.split(':').slice(1).join(':') : s.name;
+                const cardIcon = s.card_icon || '\u2753';
+                const cardStatus = s.card_status || s.state || '';
+                const isFocused = focusedSessions.includes(s.name);
+                const showThumb = s.managed && s.state !== 'exited';
+                const thumbUrl = showThumb ? '/api/session/' + encodeURIComponent(s.name) + '/thumbnail.png?v=' + _exposeVersion : '';
+
+                const card = document.createElement('div');
+                card.className = 'expose-card' + (isFocused ? ' card-focused' : '') + (s.state === 'error' ? ' card-error' : '');
+                card.dataset.session = s.name;
+                card.innerHTML =
+                    '<div class="card-top">' +
+                    (isRemote ? '<span class="card-node-tag">' + esc(s.node) + '</span>' : '') +
+                    '<span class="card-name">' + cardIcon + ' ' + esc(displayName) + '</span>' +
+                    '<span class="card-badge ' + badgeClass(s.state) + '">' + (s.state || '?') + '</span></div>' +
+                    '<div class="card-status">' + esc(cardStatus) + '</div>' +
+                    (showThumb ? '<div class="card-thumbnail-wrap"><img class="card-thumbnail" src="' + thumbUrl + '" loading="lazy" onerror="this.parentElement.style.display=\'none\'"></div>' : '') +
+                    '<div class="card-preview">' + esc(s.card_preview || s.last_line || '') + '</div>';
+                card.onclick = () => {
+                    focusSession(s.name);
+                    if (mcMode > 0) ensureMCTerminal();
+                    grid.querySelectorAll('.expose-card').forEach(c => c.classList.remove('card-focused'));
+                    card.classList.add('card-focused');
+                };
+                grid.appendChild(card);
+            });
+        }
+
+        function ensureMCTerminal() {
+            if (!focusedSessions.length) return;
+            const name = focusedSessions[0];
+            const header = document.getElementById('mc-term-header');
+            const body = document.getElementById('mc-term-body');
+            if (!body) return;
+            // Update header
+            const si = sessionsData[name] || {};
+            if (header) header.innerHTML = '<span class="pill-dot ' + dotClass(si.state) + '" style="width:8px;height:8px"></span> ' + esc(name) + ' <span style="font-weight:normal;color:var(--text-dim)">' + (si.state || '') + '</span>';
+            // Check if terminal already attached here
+            const existingEl = document.getElementById('mc-term-el');
+            if (existingEl && existingEl.dataset.session === name) {
+                fitTerminal(name);
+                return;
+            }
+            // Clear and create terminal container
+            body.innerHTML = '<div id="mc-term-el" data-session="' + esc(name) + '" style="width:100%;height:100%"></div>';
+            const el = document.getElementById('mc-term-el');
+            const term = createTerminal(name);
+            if (!term.element || !el.contains(term.element)) {
+                term.open(el);
+                setTimeout(() => fitTerminal(name), 80);
+            }
+            connectTerminalWS(name);
+        }
+
+        // MC divider drag
+        (function() {
+            let dragging = false;
+            document.addEventListener('mousedown', (e) => {
+                if (e.target.id === 'mc-divider') { dragging = true; e.target.classList.add('dragging'); e.preventDefault(); }
+            });
+            document.addEventListener('mousemove', (e) => {
+                if (!dragging) return;
+                const mc = document.getElementById('mc-layout');
+                const panel = document.getElementById('mc-cards');
+                if (!mc || !panel) return;
+                const rect = mc.getBoundingClientRect();
+                let w = mcMode === 2 ? rect.right - e.clientX : e.clientX - rect.left;
+                w = Math.max(180, Math.min(w, rect.width * 0.6));
+                panel.style.width = w + 'px';
+                Object.values(termFitAddons).forEach(fa => { try { fa.fit(); } catch(x){} });
+            });
+            document.addEventListener('mouseup', () => {
+                if (dragging) { dragging = false; document.getElementById('mc-divider').classList.remove('dragging'); }
+            });
+        })();
 
         // ══════════════════════════════════════════
         // SETTINGS PANEL
@@ -1727,6 +1957,7 @@
                 renderDock();
                 document.getElementById('settings-count').textContent = sessions.length + ' sessions';
                 if (exposeOpen) renderExpose();
+                if (mcMode > 0) renderMCCards();
                 showConnected();  // update mesh status counts
                 sseRetryDelay = 1000;
             });

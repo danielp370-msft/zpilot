@@ -194,7 +194,8 @@
         }
         .mc-term-body { flex: 1; overflow: hidden; }
         .focus-header {
-            display: flex; align-items: center; justify-content: space-between;
+            display: none; /* info moved to per-pane split-header */
+            align-items: center; justify-content: space-between;
             padding: 4px 12px; height: 28px; min-height: 28px;
             background: var(--panel-bg); border-bottom: 1px solid var(--border);
             flex-shrink: 0;
@@ -237,13 +238,18 @@
             border-left: 1px solid var(--border);
         }
         .term-container .split-header {
-            display: none; /* shown only in split mode */
+            display: flex;
             align-items: center; gap: 6px;
-            padding: 2px 8px; height: 22px;
+            padding: 2px 8px; height: 24px;
             background: var(--panel-bg); border-bottom: 1px solid var(--border);
-            font-size: 11px;
+            font-size: 11px; flex-shrink: 0;
         }
-        .focus-panels.split .term-container .split-header { display: flex; }
+        .split-header .sh-dot {
+            width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0;
+        }
+        .split-header .sh-name { font-weight: 600; color: var(--text); }
+        .split-header .sh-state { color: var(--text-dim); font-size: 10px; }
+        .split-header .sh-meta { margin-left: auto; color: var(--text-dim); font-size: 10px; }
         .term-body {
             flex: 1; position: relative; overflow: hidden;
         }
@@ -851,8 +857,9 @@
         <div class="ctx-item" id="ctx-focus" onclick="ctxFocus()">▶ Open</div>
         <div class="ctx-item" id="ctx-split" onclick="ctxSplit()">◫ Open in split</div>
         <div class="ctx-item" id="ctx-adopt" onclick="ctxAdopt()">👁 Adopt session</div>
-        <div class="ctx-item" id="ctx-dismiss" onclick="ctxDismiss()">🗑 Dismiss</div>
-        <div class="ctx-item danger" id="ctx-close" onclick="ctxClose()">✕ Close session</div>
+        <div class="ctx-item" id="ctx-detach" onclick="ctxDetach()">👋 Detach</div>
+        <div class="ctx-item" id="ctx-dismiss" onclick="ctxDismiss()">🗑 Clean up</div>
+        <div class="ctx-item danger" id="ctx-close" onclick="ctxClose()">☠️ Kill session</div>
     </div>
 
     <!-- ═══ SETTINGS DROPDOWN ═══ -->
@@ -1100,12 +1107,10 @@
         // ══════════════════════════════════════════
         function renderFocus() {
             const panels = document.getElementById('focus-panels');
-            const header = document.getElementById('focus-header');
             const empty = document.getElementById('focus-empty');
             const topSession = document.getElementById('topbar-session');
 
             if (focusedSessions.length === 0) {
-                header.style.display = 'none';
                 panels.querySelectorAll('.term-container').forEach(el => el.remove());
                 if (empty) empty.style.display = '';
                 panels.classList.remove('split');
@@ -1114,31 +1119,12 @@
             }
 
             if (empty) empty.style.display = 'none';
-            header.style.display = '';
 
             const primary = focusedSessions[0];
             const s = sessionsData[primary];
             if (s) {
-                const hc = heatColor(s.heat);
-                const fhDot = document.getElementById('fh-dot');
-                fhDot.className = 'fh-dot ' + dotClass(s.state);
-                if (hc && s.state !== 'error' && s.state !== 'exited') fhDot.style.background = hc;
-                else fhDot.style.background = '';
                 const isRemote = s.node && s.node !== 'local';
                 const displayName = isRemote ? s.name.split(':').slice(1).join(':') : s.name;
-                document.getElementById('fh-name').textContent = (isRemote ? s.node + ':' : '') + displayName;
-                document.getElementById('fh-state').textContent = s.state || 'unknown';
-                document.getElementById('fh-idle').textContent = 'idle ' + formatIdle(s.idle_seconds);
-                const heatEl = document.getElementById('fh-heat');
-                if (s.heat != null) {
-                    const pct = Math.round(s.heat * 100);
-                    heatEl.textContent = `🌡${pct}%`;
-                    heatEl.style.color = hc || '';
-                } else {
-                    heatEl.textContent = '';
-                }
-                const unm = document.getElementById('fh-unmanaged');
-                unm.style.display = s.managed ? 'none' : '';
                 topSession.textContent = (isRemote ? s.node + ':' : '') + displayName;
             }
 
@@ -1159,13 +1145,40 @@
             });
 
             visible.forEach(name => {
-                if (existing.has(name)) return;
+                const si = sessionsData[name] || {};
+                const isRemote = si.node && si.node !== 'local';
+                const displayName = isRemote ? name.split(':').slice(1).join(':') : name;
+                const hc = heatColor(si.heat);
+                const heatPct = si.heat != null ? Math.round(si.heat * 100) : 0;
+
+                if (existing.has(name)) {
+                    // Update existing header
+                    const container = panels.querySelector(`.term-container[data-session="${CSS.escape(name)}"]`);
+                    if (container) {
+                        const hdr = container.querySelector('.split-header');
+                        if (hdr) {
+                            const dot = hdr.querySelector('.sh-dot');
+                            if (dot) dot.className = 'sh-dot ' + dotClass(si.state);
+                            const state = hdr.querySelector('.sh-state');
+                            if (state) state.textContent = si.state || '';
+                            const meta = hdr.querySelector('.sh-meta');
+                            if (meta) meta.innerHTML = `idle ${formatIdle(si.idle_seconds)}${si.heat != null ? ` · 🌡${heatPct}%` : ''}`;
+                        }
+                    }
+                    return;
+                }
                 const container = document.createElement('div');
                 container.className = 'term-container';
                 container.dataset.session = name;
-                const si = sessionsData[name] || {};
                 container.innerHTML =
-                    `<div class="split-header"><span class="pill-dot ${dotClass(si.state)}" style="width:6px;height:6px"></span> ${esc(name)}</div>` +
+                    `<div class="split-header">` +
+                    `<span class="sh-dot ${dotClass(si.state)}"${hc ? ` style="background:${hc}"` : ''}></span>` +
+                    `${isRemote ? `<span style="font-size:9px;padding:1px 4px;border-radius:3px;background:var(--cyan,#66d9ef);color:#000;font-weight:bold">${esc(si.node)}</span>` : ''}` +
+                    `<span class="sh-name">${esc(displayName)}</span>` +
+                    `<span class="sh-state">${si.state || ''}</span>` +
+                    `${!si.managed ? '<span style="font-size:9px;color:var(--orange)">👁</span>' : ''}` +
+                    `<span class="sh-meta">idle ${formatIdle(si.idle_seconds)}${si.heat != null ? ` · 🌡${heatPct}%` : ''}</span>` +
+                    `</div>` +
                     `<div class="term-body" id="term-${name}"></div>`;
                 panels.appendChild(container);
             });
@@ -1556,6 +1569,7 @@
             document.getElementById('ctx-focus').style.display = isFocused ? 'none' : '';
             document.getElementById('ctx-split').style.display = isExited ? 'none' : '';
             document.getElementById('ctx-adopt').style.display = (s && !isManaged && !isExited) ? '' : 'none';
+            document.getElementById('ctx-detach').style.display = (isFocused && !isExited) ? '' : 'none';
             document.getElementById('ctx-dismiss').style.display = isExited ? '' : 'none';
             document.getElementById('ctx-close').style.display = isExited ? 'none' : '';
             ctx.style.left = '-9999px';
@@ -1574,6 +1588,21 @@
             document.getElementById('ctx-menu').classList.remove('visible');
             focusSession(ctxTarget);
             ctxTarget = null;
+        }
+        function ctxDetach() {
+            if (!ctxTarget) return;
+            document.getElementById('ctx-menu').classList.remove('visible');
+            const name = ctxTarget;
+            ctxTarget = null;
+            // Remove from focused, destroy terminal, but session keeps running
+            focusedSessions = focusedSessions.filter(n => n !== name);
+            destroyTerminal(name);
+            if (splitMode && focusedSessions.length < 2) {
+                splitMode = false;
+                document.getElementById('btn-split').classList.remove('active');
+            }
+            renderFocus();
+            renderDock();
         }
         function ctxSplit() {
             if (!ctxTarget) return;
@@ -1628,7 +1657,7 @@
         async function ctxClose() {
             if (!ctxTarget) return;
             document.getElementById('ctx-menu').classList.remove('visible');
-            if (!confirm(`Close session "${ctxTarget}"?`)) { ctxTarget = null; return; }
+            if (!confirm(`Kill session "${ctxTarget}"?\n\nThis will terminate the shell process. The session cannot be recovered.`)) { ctxTarget = null; return; }
             try {
                 await fetch(`/api/session/${encodeURIComponent(ctxTarget)}`, { method: 'DELETE' });
                 if (focusedSessions.includes(ctxTarget)) {
@@ -1717,6 +1746,7 @@
         window.ctxFocus = ctxFocus;
         window.ctxSplit = ctxSplit;
         window.ctxDismiss = ctxDismiss;
+        window.ctxDetach = ctxDetach;
         window.dockScrollLeft = dockScrollLeft;
         window.dockScrollRight = dockScrollRight;
         window.setTermMode = setTermMode;

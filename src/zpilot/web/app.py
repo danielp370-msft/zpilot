@@ -931,6 +931,15 @@ async def event_stream():
         # Send initial heartbeat immediately so browser knows stream is alive
         yield ": heartbeat\n\n"
 
+        # Send initial status immediately (no delay)
+        try:
+            sessions = await _get_session_data()
+            for s in sessions:
+                prev_states[s["name"]] = s["state"]
+            yield f"event: status\ndata: {json.dumps(sessions)}\n\n"
+        except Exception:
+            pass
+
         while True:
             await asyncio.sleep(2)
 
@@ -961,7 +970,11 @@ async def event_stream():
             yield f"event: status\ndata: {json.dumps(sessions)}\n\n"
 
     return StreamingResponse(generate(), media_type="text/event-stream",
-                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+                             headers={
+                                 "Cache-Control": "no-cache, no-store",
+                                 "X-Accel-Buffering": "no",
+                                 "Connection": "keep-alive",
+                             })
 
 
 def _discover_shell_wrapper_sessions(exclude: set[str] | None = None) -> list[dict]:

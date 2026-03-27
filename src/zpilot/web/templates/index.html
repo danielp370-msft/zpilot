@@ -1573,10 +1573,17 @@
         function ctxSplit() {
             if (!ctxTarget) return;
             document.getElementById('ctx-menu').classList.remove('visible');
-            // Enter MC mode if not already, and focus this session
-            if (mcMode === 0) toggleSplit();
-            focusSession(ctxTarget);
+            const name = ctxTarget;
             ctxTarget = null;
+            // Set focus first, then enter MC mode
+            focusedSessions = [name];
+            attentionSet.delete(name);
+            if (mcMode === 0) {
+                toggleSplit(); // enters MC mode and calls ensureMCTerminal with correct focus
+            } else {
+                ensureMCTerminal();
+                renderMCCards();
+            }
         }
         function ctxDismiss() {
             if (!ctxTarget) return;

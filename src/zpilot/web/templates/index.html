@@ -663,7 +663,7 @@
             <span class="topbar-session" id="topbar-session">No session</span>
             <span class="topbar-status">
                 <span class="sse-dot" id="sse-dot"></span>
-                <span id="sse-label">Connecting…</span>
+                <span id="sse-label">Starting…</span>
             </span>
         </div>
         <div class="topbar-right">
@@ -1554,8 +1554,17 @@
         }
         function showConnected() {
             document.getElementById('sse-dot').className = 'sse-dot live';
-            document.getElementById('sse-label').textContent = 'Live';
             document.getElementById('disconnect-overlay').classList.remove('visible');
+            // Show mesh status: count nodes
+            const localCount = sessionsList.filter(s => !s.node || s.node === 'local').length;
+            const remoteNodes = new Set(sessionsList.filter(s => s.node && s.node !== 'local').map(s => s.node));
+            const nodeCount = 1 + remoteNodes.size;  // local + remotes
+            const remoteCount = sessionsList.filter(s => s.node && s.node !== 'local').length;
+            let label = `Local · ${localCount} sessions`;
+            if (remoteNodes.size > 0) {
+                label = `${nodeCount} nodes · ${localCount + remoteCount} sessions`;
+            }
+            document.getElementById('sse-label').textContent = label;
         }
         function connectSSE() {
             const src = new EventSource('/api/stream');
@@ -1613,6 +1622,7 @@
                 renderDock();
                 document.getElementById('settings-count').textContent = sessions.length + ' sessions';
                 if (exposeOpen) renderExpose();
+                showConnected();  // update mesh status counts
                 sseRetryDelay = 1000;
             });
 

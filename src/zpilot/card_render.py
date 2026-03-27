@@ -451,7 +451,7 @@ def _render_shell(
         "active": ("⚡", "Running"),
         "idle": ("💤", "Idle"),
         "error": ("❌", "Error"),
-        "exited": ("🏁", "Exited"),
+        "exited": ("⏹", "Exited"),
     }
     icon, label = state_map.get(state, ("❓", state))
 

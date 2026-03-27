@@ -191,7 +191,7 @@ def status() -> None:
 
         state_icons = {
             "active": "⏳", "idle": "✅", "waiting": "🔔",
-            "error": "❌", "exited": "🏁", "unknown": "❓",
+            "error": "❌", "exited": "⏹", "unknown": "❓",
         }
 
         # Detailed per-session output, grouped by node

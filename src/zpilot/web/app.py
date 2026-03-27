@@ -1127,7 +1127,7 @@ async def _get_session_data() -> list[dict]:
                 "last_lines": [],
                 "last_line": "(exited)",
                 "card_mode": "shell",
-                "card_icon": "🏁",
+                "card_icon": "⏹",
                 "card_status": "Session exited",
                 "card_preview": "",
             })

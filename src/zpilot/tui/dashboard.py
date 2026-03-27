@@ -54,7 +54,7 @@ STATE_ICONS = {
     "idle": "✅",
     "waiting": "🔔",
     "error": "❌",
-    "exited": "🏁",
+    "exited": "⏹",
     "unknown": "❓",
 }
 

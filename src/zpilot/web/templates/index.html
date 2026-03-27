@@ -1575,15 +1575,27 @@
             document.getElementById('ctx-menu').classList.remove('visible');
             const name = ctxTarget;
             ctxTarget = null;
-            // Set focus first, then enter MC mode
-            focusedSessions = [name];
-            attentionSet.delete(name);
-            if (mcMode === 0) {
-                toggleSplit(); // enters MC mode and calls ensureMCTerminal with correct focus
-            } else {
-                ensureMCTerminal();
-                renderMCCards();
+            // If in MC mode, switch back to normal first
+            if (mcMode > 0) {
+                mcMode = 0;
+                const mc = document.getElementById('mc-layout');
+                mc.classList.remove('active', 'mc-right');
+                document.getElementById('focus-header').style.display = '';
+                document.getElementById('focus-panels').style.display = '';
+                document.getElementById('btn-split').textContent = '◫';
+                document.getElementById('mc-term-body').innerHTML = '';
             }
+            // Enable native split with current + new session
+            splitMode = true;
+            document.getElementById('btn-split').classList.add('active');
+            if (focusedSessions.length === 0) {
+                focusedSessions = [name];
+            } else if (!focusedSessions.includes(name)) {
+                focusedSessions = [focusedSessions[0], name];
+            }
+            renderFocus();
+            renderDock();
+            saveSettings();
         }
         function ctxDismiss() {
             if (!ctxTarget) return;

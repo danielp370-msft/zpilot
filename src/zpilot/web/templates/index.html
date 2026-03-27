@@ -848,7 +848,10 @@
 
     <!-- ═══ CONTEXT MENU ═══ -->
     <div class="ctx-menu" id="ctx-menu">
+        <div class="ctx-item" id="ctx-focus" onclick="ctxFocus()">▶ Open</div>
+        <div class="ctx-item" id="ctx-split" onclick="ctxSplit()">◫ Open in split</div>
         <div class="ctx-item" id="ctx-adopt" onclick="ctxAdopt()">👁 Adopt session</div>
+        <div class="ctx-item" id="ctx-dismiss" onclick="ctxDismiss()">🗑 Dismiss</div>
         <div class="ctx-item danger" id="ctx-close" onclick="ctxClose()">✕ Close session</div>
     </div>
 
@@ -1344,6 +1347,7 @@
                 card.className = 'expose-card' + (isError ? ' card-error' : '');
                 card.dataset.session = s.name;
                 card.onclick = () => focusSession(s.name);
+                card.oncontextmenu = (e) => { e.preventDefault(); showCtxMenu(e, s.name); };
                 card.innerHTML = `
                     <div class="card-top">
                         ${isRemote ? `<span class="card-node-tag">${esc(s.node)}</span>` : ''}
@@ -1461,6 +1465,7 @@
                     grid.querySelectorAll('.expose-card').forEach(c => c.classList.remove('card-focused'));
                     card.classList.add('card-focused');
                 };
+                card.oncontextmenu = (e) => { e.preventDefault(); showCtxMenu(e, s.name); };
                 grid.appendChild(card);
             });
         }
@@ -1541,19 +1546,43 @@
             const ctx = document.getElementById('ctx-menu');
             const s = sessionsData[name];
             const isExited = s && s.state === 'exited';
-            document.getElementById('ctx-adopt').style.display = (s && !s.managed && !isExited) ? '' : 'none';
-            document.getElementById('ctx-close').style.display = '';
-            // Position: show above click point, but measure first
+            const isManaged = s && s.managed;
+            const isFocused = focusedSessions.includes(name);
+            document.getElementById('ctx-focus').style.display = isFocused ? 'none' : '';
+            document.getElementById('ctx-split').style.display = (isFocused || isExited) ? 'none' : '';
+            document.getElementById('ctx-adopt').style.display = (s && !isManaged && !isExited) ? '' : 'none';
+            document.getElementById('ctx-dismiss').style.display = isExited ? '' : 'none';
+            document.getElementById('ctx-close').style.display = isExited ? 'none' : '';
             ctx.style.left = '-9999px';
             ctx.style.top = '-9999px';
             ctx.classList.add('visible');
             const h = ctx.offsetHeight;
             let top = e.clientY - h - 8;
             let left = e.clientX;
-            if (top < 4) top = e.clientY + 8;  // flip below if no room above
+            if (top < 4) top = e.clientY + 8;
             if (left + 160 > window.innerWidth) left = window.innerWidth - 164;
             ctx.style.left = left + 'px';
             ctx.style.top = top + 'px';
+        }
+        function ctxFocus() {
+            if (!ctxTarget) return;
+            document.getElementById('ctx-menu').classList.remove('visible');
+            focusSession(ctxTarget);
+            ctxTarget = null;
+        }
+        function ctxSplit() {
+            if (!ctxTarget) return;
+            document.getElementById('ctx-menu').classList.remove('visible');
+            // Enter MC mode if not already, and focus this session
+            if (mcMode === 0) toggleSplit();
+            focusSession(ctxTarget);
+            ctxTarget = null;
+        }
+        function ctxDismiss() {
+            if (!ctxTarget) return;
+            document.getElementById('ctx-menu').classList.remove('visible');
+            dismissSession(ctxTarget);
+            ctxTarget = null;
         }
         async function ctxAdopt() {
             if (!ctxTarget) return;
@@ -1648,6 +1677,9 @@
         window.setTheme = setTheme;
         window.ctxAdopt = ctxAdopt;
         window.ctxClose = ctxClose;
+        window.ctxFocus = ctxFocus;
+        window.ctxSplit = ctxSplit;
+        window.ctxDismiss = ctxDismiss;
         window.dockScrollLeft = dockScrollLeft;
         window.dockScrollRight = dockScrollRight;
         window.setTermMode = setTermMode;

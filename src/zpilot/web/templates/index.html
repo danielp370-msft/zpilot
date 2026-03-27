@@ -1382,6 +1382,9 @@
                 btn.classList.remove('active');
                 btn.textContent = '◫';
                 splitMode = false;
+                // Destroy MC terminal so it can be recreated in focus panels
+                if (focusedSessions.length) destroyTerminal(focusedSessions[0]);
+                document.getElementById('mc-term-body').innerHTML = '';
                 renderFocus();
             } else {
                 mc.classList.add('active');
@@ -1466,19 +1469,19 @@
             if (header) header.innerHTML = '<span class="pill-dot ' + dotClass(si.state) + '" style="width:8px;height:8px"></span> ' + esc(name) + ' <span style="font-weight:normal;color:var(--text-dim)">' + (si.state || '') + '</span>';
             // Check if terminal already attached here
             const existingEl = document.getElementById('mc-term-el');
-            if (existingEl && existingEl.dataset.session === name) {
+            if (existingEl && existingEl.dataset.session === name && terminals[name] && existingEl.contains(terminals[name].element)) {
                 fitTerminal(name);
                 return;
             }
+            // Destroy old terminal instance (can't reopen in new container)
+            destroyTerminal(name);
             // Clear and create terminal container
-            body.innerHTML = '<div id="mc-term-el" data-session="' + esc(name) + '" style="width:100%;height:100%"></div>';
+            body.innerHTML = '<div id="mc-term-el" class="term-body" data-session="' + esc(name) + '" style="width:100%;height:100%"></div>';
             const el = document.getElementById('mc-term-el');
             const term = createTerminal(name);
-            if (!term.element || !el.contains(term.element)) {
-                term.open(el);
-                setTimeout(() => fitTerminal(name), 80);
-            }
+            term.open(el);
             connectTerminalWS(name);
+            setTimeout(() => fitTerminal(name), 100);
         }
 
         // MC divider drag

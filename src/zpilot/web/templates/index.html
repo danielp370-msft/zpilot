@@ -439,6 +439,13 @@
             grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
             gap: 12px; align-content: start;
         }
+        .expose-node-header {
+            grid-column: 1 / -1;
+            font-size: 12px; font-weight: 700; color: var(--accent);
+            padding: 8px 0 2px; border-bottom: 1px solid var(--border);
+            margin-top: 4px;
+        }
+        .expose-node-header:first-child { margin-top: 0; }
         .expose-card {
             background: var(--card-bg); border: 1px solid var(--border);
             border-radius: 8px; padding: 12px; cursor: pointer;
@@ -773,6 +780,9 @@
         <div class="settings-section" style="margin-bottom:0; margin-top:10px">
             <div class="settings-label">Sessions</div>
             <div style="font-size:12px;color:var(--text-dim)" id="settings-count">0 sessions</div>
+            <label style="font-size:11px;color:var(--text-dim);margin-top:6px;display:flex;align-items:center;gap:5px;cursor:pointer">
+                <input type="checkbox" id="group-by-node" onchange="toggleGroupByNode(this.checked)"> Group by node
+            </label>
         </div>
     </div>
 
@@ -810,7 +820,7 @@
         // SETTINGS (localStorage)
         // ══════════════════════════════════════════
         const STORAGE_KEY = 'zpilot_v2';
-        window.settings = { theme: 'dark', focused: null, focused2: null, split: false, expose: false, termMode: 'fit', scaleSize: 'auto' };
+        window.settings = { theme: 'dark', focused: null, focused2: null, split: false, expose: false, termMode: 'fit', scaleSize: 'auto', groupByNode: false };
         let settings = window.settings;
         try {
             const s = JSON.parse(localStorage.getItem(STORAGE_KEY));
@@ -1133,16 +1143,37 @@
         // ══════════════════════════════════════════
         // EXPOSÉ
         // ══════════════════════════════════════════
+        function toggleGroupByNode(on) {
+            settings.groupByNode = on;
+            saveSettings();
+            if (exposeOpen) renderExpose();
+        }
         let _exposeVersion = 0;
         function renderExpose() {
             const grid = document.getElementById('expose-grid');
-            const sorted = [...sessionsList].sort((a, b) => {
-                const ap = statePriority(a.state), bp = statePriority(b.state);
-                if (ap !== bp) return ap - bp;
-                return a.name.localeCompare(b.name);
-            });
+            let sorted = [...sessionsList];
+
+            if (settings.groupByNode) {
+                // Group by node, then sort within each group
+                sorted.sort((a, b) => {
+                    const na = a.node || 'local', nb = b.node || 'local';
+                    if (na === 'local' && nb !== 'local') return -1;
+                    if (na !== 'local' && nb === 'local') return 1;
+                    if (na !== nb) return na.localeCompare(nb);
+                    return a.name.localeCompare(b.name);
+                });
+            } else {
+                sorted.sort((a, b) => {
+                    const ap = statePriority(a.state), bp = statePriority(b.state);
+                    if (ap !== bp) return ap - bp;
+                    return a.name.localeCompare(b.name);
+                });
+            }
+
             const currentNames = new Set(sorted.map(s => s.name));
             const existingCards = {};
+            // Remove stale cards and all node headers (rebuilt each time)
+            grid.querySelectorAll('.expose-node-header').forEach(el => el.remove());
             grid.querySelectorAll('.expose-card').forEach(el => {
                 const name = el.dataset.session;
                 if (name && currentNames.has(name)) {
@@ -1153,7 +1184,20 @@
             });
             _exposeVersion++;
             const ver = _exposeVersion;
+            let lastNode = null;
             sorted.forEach(s => {
+                // Insert node header when group changes (only in group-by-node mode)
+                if (settings.groupByNode) {
+                    const node = s.node || 'local';
+                    if (node !== lastNode) {
+                        lastNode = node;
+                        const hdr = document.createElement('div');
+                        hdr.className = 'expose-node-header';
+                        const count = sorted.filter(x => (x.node || 'local') === node).length;
+                        hdr.textContent = `${node === 'local' ? '● local' : '● ' + node} — ${count} session${count !== 1 ? 's' : ''}`;
+                        grid.appendChild(hdr);
+                    }
+                }
                 const isError = s.state === 'error';
                 const isExited = s.state === 'exited';
                 const isRemote = s.node && s.node !== 'local';
@@ -1178,6 +1222,8 @@
                         if (img && showThumb) img.src = thumbUrl;
                     }
                     existing.className = 'expose-card' + (isError ? ' card-error' : '');
+                    // Re-append to maintain order (after headers)
+                    grid.appendChild(existing);
                     return;
                 }
 
@@ -1790,6 +1836,9 @@
         setScaleSize(settings.scaleSize || 'auto');
         splitMode = !!settings.split;
         if (splitMode) document.getElementById('btn-split').classList.add('active');
+        // Restore group-by-node checkbox
+        const gbnCheck = document.getElementById('group-by-node');
+        if (gbnCheck) gbnCheck.checked = !!settings.groupByNode;
 
         // Restore focused session(s) from localStorage or auto-pick first
         if (settings.focused && sessionsData[settings.focused]) {

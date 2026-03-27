@@ -70,12 +70,13 @@ async def _start_remote_fetcher():
 # ── MCP endpoint (local copilot connection) ──
 
 _mcp_manager = None
+_mcp_run_ctx = None
 
 @app.on_event("startup")
 async def _start_mcp_endpoint():
     """Wire MCP Streamable HTTP so local copilots can connect to this dashboard."""
     import inspect
-    global _mcp_manager
+    global _mcp_manager, _mcp_run_ctx
     from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
     from ..mcp_server import create_mcp_server
 
@@ -83,8 +84,9 @@ async def _start_mcp_endpoint():
     _mcp_manager = StreamableHTTPSessionManager(
         app=mcp_server, json_response=False, stateless=False,
     )
-    # Start the session manager
-    await _mcp_manager.__aenter__()
+    # Start the session manager via its async context manager
+    _mcp_run_ctx = _mcp_manager.run()
+    await _mcp_run_ctx.__aenter__()
 
     # Detect API: MCP >= 1.26 uses ASGI mount, older uses Request handler
     sig = inspect.signature(_mcp_manager.handle_request)

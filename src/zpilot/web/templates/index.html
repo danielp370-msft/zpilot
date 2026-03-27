@@ -1589,10 +1589,13 @@
                 document.getElementById('focus-header').style.display = '';
                 document.getElementById('focus-panels').style.display = '';
                 document.getElementById('btn-split').textContent = '◫';
-                // Destroy MC terminal
-                if (focusedSessions.length) destroyTerminal(focusedSessions[0]);
                 document.getElementById('mc-term-body').innerHTML = '';
             }
+
+            // Destroy all existing terminals so renderFocus starts fresh
+            [...focusedSessions, name].forEach(n => destroyTerminal(n));
+            // Clear any leftover term containers
+            document.getElementById('focus-panels').querySelectorAll('.term-container').forEach(el => el.remove());
 
             // Enable native split: current session left, new session right
             splitMode = true;
@@ -1600,11 +1603,7 @@
             if (focusedSessions.length === 0) {
                 focusedSessions = [name];
             } else if (focusedSessions[0] === name) {
-                // Same session — just enable split with it alone (will show one pane)
                 focusedSessions = [name];
-            } else if (focusedSessions.includes(name)) {
-                // Already in the list, make it secondary
-                focusedSessions = [focusedSessions[0], name];
             } else {
                 focusedSessions = [focusedSessions[0], name];
             }

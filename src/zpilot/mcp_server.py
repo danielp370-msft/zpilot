@@ -168,33 +168,6 @@ def create_mcp_server(config: ZpilotConfig | None = None) -> Server:
                 },
             ),
             Tool(
-                name="launch_copilot",
-                description="Create a new pane and start copilot-cli (or other AI agent) in it",
-                inputSchema={
-                    "type": "object",
-                    "properties": {
-                        "session": {
-                            "type": "string",
-                            "description": "Session name (creates new if needed)",
-                        },
-                        "pane_name": {
-                            "type": "string",
-                            "description": "Name for the pane",
-                        },
-                        "agent_command": {
-                            "type": "string",
-                            "description": "Command to launch (default: copilot-cli)",
-                            "default": "copilot-cli",
-                        },
-                        "task": {
-                            "type": "string",
-                            "description": "Initial task/prompt to send to the agent",
-                        },
-                    },
-                    "required": ["session"],
-                },
-            ),
-            Tool(
                 name="check_status",
                 description="Check the status (active/idle/waiting/error) of a session's pane",
                 inputSchema={
@@ -206,14 +179,6 @@ def create_mcp_server(config: ZpilotConfig | None = None) -> Server:
                         },
                     },
                     "required": ["session"],
-                },
-            ),
-            Tool(
-                name="check_all",
-                description="Get a status summary of all sessions",
-                inputSchema={
-                    "type": "object",
-                    "properties": {},
                 },
             ),
             Tool(
@@ -315,25 +280,6 @@ def create_mcp_server(config: ZpilotConfig | None = None) -> Server:
             Tool(
                 name="fleet_status",
                 description="Get health summary of all nodes — sessions, states, idle times",
-                inputSchema={"type": "object", "properties": {}},
-            ),
-            Tool(
-                name="node_sessions",
-                description="List sessions on a specific remote node",
-                inputSchema={
-                    "type": "object",
-                    "properties": {"node": NODE_PARAM},
-                    "required": ["node"],
-                },
-            ),
-            Tool(
-                name="list_siblings",
-                description="List known peer nodes (for mesh discovery). Returns node names, transport types, and labels.",
-                inputSchema={"type": "object", "properties": {}},
-            ),
-            Tool(
-                name="fleet_health",
-                description="Get health summary of all nodes — latency, state, last_seen",
                 inputSchema={"type": "object", "properties": {}},
             ),
             # ── Fleet orchestration tools ──
@@ -541,14 +487,14 @@ async def _dispatch(
             return "\n".join(lines)
         return "Monitor not available."
 
-    elif name == "list_siblings":
+    elif name == "list_siblings":  # alias → use list_nodes
         reg = registry or NodeRegistry()
         nodes = ops.list_nodes(reg)
         siblings = [{"name": n["name"], "transport": n["transport"], "host": n["host"], "labels": n["labels"]} for n in nodes]
         import json as _json
         return _json.dumps({"siblings": siblings, "count": len(siblings)}, indent=2)
 
-    elif name == "fleet_health":
+    elif name == "fleet_health":  # alias → use fleet_status
         tracker = health_tracker or NodeHealthTracker(registry or NodeRegistry())
         health_data = await tracker.check_all()
         nodes_list = tracker.all_health()
@@ -577,7 +523,7 @@ async def _dispatch(
             lines.append(line)
         return "\n".join(lines)
 
-    elif name == "node_sessions":
+    elif name == "node_sessions":  # alias → use list_sessions with node prefix
         reg = registry or NodeRegistry()
         node = reg.get(args["node"])
         if node.is_local:
@@ -659,7 +605,7 @@ async def _dispatch(
             return f"Executed on {node}:{result.get('session', 'current')}: {args['command']}"
         return f"Executed: {args['command']}"
 
-    elif name == "launch_copilot":
+    elif name == "launch_copilot":  # alias → use launch_agent
         session = args["session"]
         pane_name = args.get("pane_name", "copilot")
         agent_cmd = args.get("agent_command", "copilot-cli")
@@ -690,7 +636,7 @@ async def _dispatch(
         result = await ops.check_status(args["session"], detector, registry)
         return json.dumps(result, indent=2)
 
-    elif name == "check_all":
+    elif name == "check_all":  # alias → use fleet_status
         sessions = await ops.list_sessions()
         if not sessions:
             return "No sessions found."

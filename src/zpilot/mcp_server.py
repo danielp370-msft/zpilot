@@ -766,7 +766,7 @@ async def _dispatch(
             flows = flow_registry.list_flows()
             lines = [f"Flows on local ({len(flows)}):"]
             for f in flows:
-                lines.append(f"  {f.name}  [{f.flow_type.value}]  {f.state.value}  {f.size} bytes")
+                lines.append(f"  {f.name}  [{f.mime}]  {f.state.value}  {f.size} bytes")
             return "\n".join(lines)
         else:
             reg = registry or NodeRegistry()

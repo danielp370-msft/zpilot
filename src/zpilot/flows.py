@@ -1,13 +1,17 @@
 """Flow registry — named data streams across the zpilot mesh.
 
-A flow is a named data channel between nodes. Types:
-  tty   — bidirectional, persistent (shell sessions, copilots)
-  file  — one-shot transfer, staged to /tmp/zpilot/flows/
-  pipe  — continuous unidirectional stream (live logs, command output)
+A flow is a named data channel between nodes. MIME type determines
+what the data is and how it renders:
+
+  x-zpilot/tty      — terminal session (bidirectional, persistent)
+  application/*      — binary files, executables
+  text/*             — text files, logs, configs
+  image/*            — images (rendered inline in dashboard)
+  audio/*            — audio streams
 
 Flows are the unified abstraction over TTY sessions, file transfers,
 and streaming data. The control plane handles naming/discovery, the
-data plane uses the fastest available transport (WebSocket, HTTP chunked).
+data plane uses the fastest available transport.
 
 Security:
   - All flow operations require authenticated HTTP (Bearer token)
@@ -21,6 +25,7 @@ Security:
 from __future__ import annotations
 
 import hashlib
+import mimetypes
 import os
 import re
 import shutil
@@ -30,6 +35,8 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, AsyncIterator
 
+mimetypes.init()
+
 
 # ── Configuration ─────────────────────────────────────────────
 
@@ -38,42 +45,62 @@ MAX_FLOW_SIZE = 5 * 1024 * 1024 * 1024  # 5 GB
 DEFAULT_TTL = 3600  # 1 hour
 CHUNK_SIZE = 65536  # 64 KB streaming chunks
 
-# Directories allowed for flow reads (source files)
 ALLOWED_READ_DIRS = [
     Path.home(),
     Path("/tmp"),
 ]
 
-_NAME_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$")
+_NAME_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,127}$")
+
+# zpilot custom MIME types
+MIME_TTY = "x-zpilot/tty"
+MIME_DEFAULT = "application/octet-stream"
 
 
 # ── Types ─────────────────────────────────────────────────────
 
-class FlowType(Enum):
-    TTY = "tty"      # bidirectional terminal session
-    FILE = "file"    # one-shot file transfer
-    PIPE = "pipe"    # continuous unidirectional stream
-
-
 class FlowState(Enum):
-    OFFERED = "offered"      # available for consumption
-    STREAMING = "streaming"  # actively transferring
-    COMPLETED = "completed"  # transfer done
-    FAILED = "failed"        # transfer error
-    EXPIRED = "expired"      # TTL exceeded
+    OFFERED = "offered"
+    STREAMING = "streaming"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    EXPIRED = "expired"
+
+
+def guess_mime(path: str | None = None, name: str | None = None) -> str:
+    """Guess MIME type from file path or flow name."""
+    for src in (path, name):
+        if src:
+            mime, _ = mimetypes.guess_type(src)
+            if mime:
+                return mime
+    return MIME_DEFAULT
+
+
+def mime_category(mime: str) -> str:
+    """Broad category for rendering decisions."""
+    if mime == MIME_TTY:
+        return "tty"
+    if mime.startswith("image/"):
+        return "image"
+    if mime.startswith("text/") or mime in ("application/json", "application/xml"):
+        return "text"
+    if mime.startswith("audio/"):
+        return "audio"
+    return "binary"
 
 
 @dataclass
 class FlowInfo:
     """Metadata about a registered flow."""
     name: str
-    flow_type: FlowType
+    mime: str = MIME_DEFAULT
     state: FlowState = FlowState.OFFERED
-    direction: str = "out"        # "out" = provider, "in" = consumer
-    source_path: str | None = None  # local file path (for file flows)
-    size: int = 0                 # known size in bytes (0 = unknown/streaming)
-    transferred: int = 0         # bytes transferred so far
-    sha256: str | None = None    # integrity hash (set on completion)
+    direction: str = "out"
+    source_path: str | None = None
+    size: int = 0
+    transferred: int = 0
+    sha256: str | None = None
     created_at: float = field(default_factory=time.monotonic)
     ttl: float = DEFAULT_TTL
     metadata: dict[str, Any] = field(default_factory=dict)
@@ -84,14 +111,21 @@ class FlowInfo:
 
     @property
     def progress(self) -> float:
-        if self.size <= 0:
-            return 0.0
-        return min(1.0, self.transferred / self.size)
+        return min(1.0, self.transferred / self.size) if self.size > 0 else 0.0
+
+    @property
+    def category(self) -> str:
+        return mime_category(self.mime)
+
+    @property
+    def is_tty(self) -> bool:
+        return self.mime == MIME_TTY
 
     def to_dict(self) -> dict:
         return {
             "name": self.name,
-            "type": self.flow_type.value,
+            "mime": self.mime,
+            "category": self.category,
             "state": self.state.value,
             "direction": self.direction,
             "size": self.size,
@@ -107,20 +141,18 @@ class FlowInfo:
 # ── Flow Registry ─────────────────────────────────────────────
 
 class FlowRegistry:
-    """Thread-safe registry of named flows on this node."""
+    """Registry of named flows on this node."""
 
     def __init__(self):
         self._flows: dict[str, FlowInfo] = {}
         STAGING_DIR.mkdir(parents=True, exist_ok=True)
 
     def validate_name(self, name: str) -> str | None:
-        """Validate flow name. Returns error message or None."""
         if not _NAME_RE.match(name):
-            return f"Invalid flow name: must be alphanumeric/dash/dot, 1-128 chars"
+            return "Invalid flow name: must be alphanumeric/dash/dot/colon, 1-128 chars"
         return None
 
     def validate_read_path(self, path: str) -> str | None:
-        """Validate a source path for reading. Returns error or None."""
         resolved = Path(path).resolve()
         if ".." in resolved.parts:
             return "Path traversal not allowed"
@@ -129,7 +161,7 @@ class FlowRegistry:
                 return None
         return f"Path not in allowed directories: {resolved}"
 
-    def offer(self, name: str, flow_type: FlowType,
+    def offer(self, name: str, mime: str | None = None,
               source_path: str | None = None,
               ttl: float = DEFAULT_TTL,
               metadata: dict | None = None) -> FlowInfo | str:
@@ -137,62 +169,48 @@ class FlowRegistry:
         err = self.validate_name(name)
         if err:
             return err
-
         if source_path:
             err = self.validate_read_path(source_path)
             if err:
                 return err
             p = Path(source_path)
-            if p.is_file():
-                size = p.stat().st_size
-                if size > MAX_FLOW_SIZE:
-                    return f"File too large: {size} bytes (max {MAX_FLOW_SIZE})"
-            else:
-                size = 0
+            size = p.stat().st_size if p.is_file() else 0
+            if size > MAX_FLOW_SIZE:
+                return f"File too large: {size} bytes (max {MAX_FLOW_SIZE})"
         else:
             size = 0
-
+        if not mime:
+            mime = guess_mime(path=source_path, name=name)
         flow = FlowInfo(
-            name=name,
-            flow_type=flow_type,
-            state=FlowState.OFFERED,
-            direction="out",
-            source_path=source_path,
-            size=size if source_path else 0,
-            ttl=ttl,
+            name=name, mime=mime,
+            state=FlowState.OFFERED, direction="out",
+            source_path=source_path, size=size, ttl=ttl,
             metadata=metadata or {},
         )
         self._flows[name] = flow
         return flow
 
-    def receive(self, name: str, flow_type: FlowType = FlowType.FILE,
+    def receive(self, name: str, mime: str = MIME_DEFAULT,
                 ttl: float = DEFAULT_TTL) -> FlowInfo | str:
-        """Register an incoming flow (for receiving pushes)."""
+        """Register an incoming flow."""
         err = self.validate_name(name)
         if err:
             return err
         flow = FlowInfo(
-            name=name,
-            flow_type=flow_type,
-            state=FlowState.STREAMING,
-            direction="in",
-            ttl=ttl,
+            name=name, mime=mime,
+            state=FlowState.STREAMING, direction="in", ttl=ttl,
         )
         self._flows[name] = flow
-        # Create staging directory
-        stage_dir = STAGING_DIR / name
-        stage_dir.mkdir(parents=True, exist_ok=True)
+        (STAGING_DIR / name).mkdir(parents=True, exist_ok=True)
         return flow
 
     def get(self, name: str) -> FlowInfo | None:
-        """Get flow info by name."""
         flow = self._flows.get(name)
         if flow and flow.expired:
             flow.state = FlowState.EXPIRED
         return flow
 
     def list_flows(self, include_expired: bool = False) -> list[FlowInfo]:
-        """List all registered flows."""
         self._cleanup_expired()
         flows = list(self._flows.values())
         if not include_expired:
@@ -200,7 +218,6 @@ class FlowRegistry:
         return flows
 
     def complete(self, name: str, sha256: str | None = None) -> None:
-        """Mark a flow as completed."""
         flow = self._flows.get(name)
         if flow:
             flow.state = FlowState.COMPLETED
@@ -208,14 +225,12 @@ class FlowRegistry:
                 flow.sha256 = sha256
 
     def fail(self, name: str, error: str = "") -> None:
-        """Mark a flow as failed."""
         flow = self._flows.get(name)
         if flow:
             flow.state = FlowState.FAILED
             flow.metadata["error"] = error
 
     def remove(self, name: str) -> bool:
-        """Remove a flow and clean up staging data."""
         if name in self._flows:
             del self._flows[name]
             stage_dir = STAGING_DIR / name
@@ -225,39 +240,75 @@ class FlowRegistry:
         return False
 
     def staging_path(self, name: str) -> Path:
-        """Get the staging directory path for a flow."""
         return STAGING_DIR / name
 
     def _cleanup_expired(self) -> None:
-        """Remove expired flows."""
         now = time.monotonic()
-        expired = [n for n, f in self._flows.items()
-                   if now - f.created_at > f.ttl]
-        for name in expired:
+        for name in [n for n, f in self._flows.items() if now - f.created_at > f.ttl]:
             self.remove(name)
+
+
+# ── Rendering ─────────────────────────────────────────────────
+
+def render_flow(flow: FlowInfo) -> tuple[bytes, str]:
+    """Render a flow for display. Returns (bytes, content_type).
+
+    TTY → terminal screenshot PNG
+    image → raw image bytes
+    text → UTF-8 text (truncated)
+    binary → hex dump preview
+    """
+    cat = flow.category
+
+    if cat == "tty" and flow.source_path:
+        try:
+            from .thumbnail import render_thumbnail_from_log
+            session = flow.name.split(":")[0] if ":" in flow.name else flow.name
+            png = render_thumbnail_from_log(session)
+            if png:
+                return png, "image/png"
+        except Exception:
+            pass
+        return b"(no render)", "text/plain"
+
+    if cat == "image" and flow.source_path and os.path.exists(flow.source_path):
+        return Path(flow.source_path).read_bytes(), flow.mime
+
+    if cat == "text" and flow.source_path and os.path.exists(flow.source_path):
+        text = Path(flow.source_path).read_text(errors="replace")[:10000]
+        return text.encode(), "text/plain; charset=utf-8"
+
+    if flow.source_path and os.path.exists(flow.source_path):
+        with open(flow.source_path, "rb") as f:
+            head = f.read(256)
+        lines = []
+        for i in range(0, len(head), 16):
+            chunk = head[i:i+16]
+            hexs = " ".join(f"{b:02x}" for b in chunk)
+            asci = "".join(chr(b) if 32 <= b < 127 else "." for b in chunk)
+            lines.append(f"{i:08x}  {hexs:<48s}  {asci}")
+        return "\n".join(lines).encode(), "text/plain; charset=utf-8"
+
+    return b"(empty flow)", "text/plain"
 
 
 # ── Streaming helpers ─────────────────────────────────────────
 
 async def stream_file_chunks(path: str, chunk_size: int = CHUNK_SIZE) -> AsyncIterator[bytes]:
-    """Yield file content in chunks. Non-blocking via thread executor."""
     import asyncio
     loop = asyncio.get_event_loop()
-
-    def _read_chunks():
+    def _read():
         with open(path, "rb") as f:
             while True:
                 chunk = f.read(chunk_size)
                 if not chunk:
                     break
                 yield chunk
-
-    for chunk in await loop.run_in_executor(None, lambda: list(_read_chunks())):
+    for chunk in await loop.run_in_executor(None, lambda: list(_read())):
         yield chunk
 
 
 def compute_sha256(path: str) -> str:
-    """Compute SHA256 hash of a file."""
     h = hashlib.sha256()
     with open(path, "rb") as f:
         while True:
@@ -271,7 +322,7 @@ def compute_sha256(path: str) -> str:
 # ── TTY auto-registration ────────────────────────────────────
 
 def register_tty_sessions(registry: FlowRegistry) -> int:
-    """Auto-register active TTY sessions as flows. Returns count added."""
+    """Auto-register active TTY sessions as flows with x-zpilot/tty MIME."""
     log_dir = Path("/tmp/zpilot/logs")
     fifo_dir = Path("/tmp/zpilot/fifos")
     count = 0
@@ -292,11 +343,9 @@ def register_tty_sessions(registry: FlowRegistry) -> int:
                 pass
         if alive:
             registry.offer(
-                name=name,
-                flow_type=FlowType.TTY,
-                source_path=str(log_file),
-                ttl=86400,  # 24h for TTY sessions
-                metadata={"session": name, "type": "tty"},
+                name=name, mime=MIME_TTY,
+                source_path=str(log_file), ttl=86400,
+                metadata={"session": name},
             )
             count += 1
     return count

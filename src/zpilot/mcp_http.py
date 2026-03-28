@@ -811,7 +811,7 @@ def create_http_app(config: ZpilotConfig | None = None) -> FastAPI:
 
     # ── Flow endpoints ──
 
-    from .flows import flow_registry, FlowType, FlowState, register_tty_sessions, stream_file_chunks, compute_sha256, STAGING_DIR, CHUNK_SIZE
+    from .flows import flow_registry, FlowState, register_tty_sessions, stream_file_chunks, compute_sha256, render_flow, STAGING_DIR, CHUNK_SIZE, guess_mime, MIME_DEFAULT
 
     @app.get("/api/flow/list")
     async def api_flow_list():
@@ -826,7 +826,7 @@ def create_http_app(config: ZpilotConfig | None = None) -> FastAPI:
         body = await request.json()
         name = body.get("name", "")
         source = body.get("path")
-        ftype = FlowType(body.get("type", "file"))
+        ftype = body.get("mime") or guess_mime(path=body.get("path"), name=name)
         ttl = body.get("ttl", 3600)
         result = flow_registry.offer(name, ftype, source_path=source, ttl=ttl,
                                      metadata=body.get("metadata", {}))
@@ -883,7 +883,7 @@ def create_http_app(config: ZpilotConfig | None = None) -> FastAPI:
             return JSONResponse({"error": err}, status_code=400)
 
         # Create receiving flow
-        flow = flow_registry.receive(name, FlowType.FILE)
+        flow = flow_registry.receive(name, mime=MIME_DEFAULT)
         if isinstance(flow, str):
             return JSONResponse({"error": flow}, status_code=400)
 
@@ -924,6 +924,24 @@ def create_http_app(config: ZpilotConfig | None = None) -> FastAPI:
         """Remove a flow and its staging data."""
         ok = flow_registry.remove(name)
         return {"removed": ok, "name": name}
+
+    @app.get("/api/flow/{name}/render")
+    async def api_flow_render(name: str):
+        """Render a flow for display. Returns appropriate content based on MIME type.
+
+        TTY flows → terminal screenshot PNG
+        Image flows → raw image
+        Text flows → text content
+        Binary → hex dump preview
+        """
+        register_tty_sessions(flow_registry)
+        flow = flow_registry.get(name)
+        if not flow:
+            return JSONResponse({"error": f"Flow not found: {name}"}, status_code=404)
+        data, content_type = render_flow(flow)
+        from starlette.responses import Response
+        return Response(content=data, media_type=content_type,
+                        headers={"Cache-Control": "no-cache, max-age=3"})
 
     # ── Raw PTY WebSocket ──
 

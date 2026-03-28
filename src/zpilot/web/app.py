@@ -189,6 +189,35 @@ async def api_set_annotation(scope: str, request: Request):
     return {"status": "set", "scope": scope, "key": key}
 
 
+@app.get("/api/flow/list")
+async def api_flow_list_web():
+    """List flows (proxied from flow registry)."""
+    from ..flows import flow_registry, register_tty_sessions
+    register_tty_sessions(flow_registry)
+    return {"flows": [f.to_dict() for f in flow_registry.list_flows()]}
+
+
+@app.get("/api/flow/{name}/render")
+async def api_flow_render_web(name: str):
+    """Render a flow for display."""
+    from ..flows import flow_registry, register_tty_sessions, render_flow
+    register_tty_sessions(flow_registry)
+    flow = flow_registry.get(name)
+    if not flow:
+        from starlette.responses import JSONResponse
+        return JSONResponse({"error": "not found"}, status_code=404)
+    data, ct = render_flow(flow)
+    return StreamingResponse(__import__("io").BytesIO(data), media_type=ct,
+                             headers={"Cache-Control": "no-cache, max-age=3"})
+
+
+@app.delete("/api/flow/{name}")
+async def api_flow_delete_web(name: str):
+    """Remove a flow."""
+    from ..flows import flow_registry
+    return {"removed": flow_registry.remove(name)}
+
+
 @app.api_route(
     "/api/relay/{node_name}/{path:path}",
     methods=["GET", "POST", "PUT", "DELETE"],

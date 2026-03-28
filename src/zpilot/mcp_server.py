@@ -411,6 +411,21 @@ def create_mcp_server(config: ZpilotConfig | None = None) -> Server:
                 description="List all annotation scopes (nodes, sessions, fleet) and their entry counts.",
                 inputSchema={"type": "object", "properties": {}},
             ),
+            Tool(
+                name="show",
+                description="Display content in the dashboard. Creates a renderable flow that appears as a visual card. Supports text, HTML, images, JSON.",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "name": {"type": "string", "description": "Display name for this content"},
+                        "content": {"type": "string", "description": "Text/HTML/JSON content to display (for inline content)"},
+                        "path": {"type": "string", "description": "File path to display (for images, large files)"},
+                        "mime": {"type": "string", "description": "MIME type (auto-detected if path given). Examples: text/html, image/png, application/json"},
+                        "session": {"type": "string", "description": "Attach to this session (shows in session's flow panel)"},
+                    },
+                    "required": ["name"],
+                },
+            ),
         ]
 
     # ── Tool implementations ────────────────────────────────────
@@ -890,6 +905,47 @@ async def _dispatch(
             data = annotations.get_all(scope)
             lines.append(f"  {scope}: {len(data)} entries")
         return "\n".join(lines)
+
+    elif name == "show":
+        from .flows import flow_registry, guess_mime, STAGING_DIR
+        show_name = args.get("name", "show")
+        content = args.get("content")
+        path = args.get("path")
+        mime = args.get("mime")
+        session = args.get("session")
+
+        if content and not path:
+            # Inline content → write to staging file
+            if not mime:
+                if content.strip().startswith("<"):
+                    mime = "text/html"
+                elif content.strip().startswith("{"):
+                    mime = "application/json"
+                else:
+                    mime = "text/plain"
+            stage_dir = STAGING_DIR / show_name
+            stage_dir.mkdir(parents=True, exist_ok=True)
+            ext = {"text/html": ".html", "application/json": ".json", "text/plain": ".txt",
+                   "text/markdown": ".md", "image/svg+xml": ".svg"}.get(mime, ".dat")
+            stage_file = stage_dir / f"data{ext}"
+            stage_file.write_text(content)
+            path = str(stage_file)
+
+        if not path:
+            return "Error: provide 'content' or 'path'"
+
+        if not mime:
+            mime = guess_mime(path=path, name=show_name)
+
+        metadata = {}
+        if session:
+            metadata["session"] = session
+
+        result = flow_registry.offer(show_name, mime=mime, source_path=path,
+                                     ttl=3600, metadata=metadata)
+        if isinstance(result, str):
+            return f"Error: {result}"
+        return f"Showing '{show_name}' ({mime}, {result.size} bytes) — visible in dashboard"
 
     else:
         return f"Unknown tool: {name}"

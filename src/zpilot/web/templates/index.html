@@ -562,6 +562,64 @@
         .type-pty { background: rgba(210,153,34,0.2); color: var(--yellow); }
         .type-remote { background: rgba(137,180,250,0.2); color: var(--blue, #58a6ff); }
 
+        /* ── FLOW OVERLAYS ──────────────────────── */
+        .flow-overlay {
+            position: absolute; z-index: 50;
+            bottom: 48px; right: 12px;
+            display: flex; flex-direction: column; gap: 8px;
+            pointer-events: none;
+            max-height: 60%; overflow-y: auto;
+        }
+        .flow-card {
+            pointer-events: auto;
+            background: var(--panel-bg); border: 1px solid var(--border);
+            border-radius: 8px; padding: 8px 10px;
+            min-width: 180px; max-width: 280px;
+            opacity: 0.85; backdrop-filter: blur(8px);
+            cursor: pointer; transition: all 0.2s;
+            box-shadow: 0 4px 16px rgba(0,0,0,0.3);
+        }
+        .flow-card:hover { opacity: 1; transform: translateY(-2px); }
+        .flow-card-title {
+            font-size: 11px; font-weight: 600; color: var(--text);
+            margin-bottom: 4px; display: flex; align-items: center; gap: 4px;
+        }
+        .flow-card-title .flow-dismiss {
+            margin-left: auto; font-size: 10px; opacity: 0.5; cursor: pointer;
+        }
+        .flow-card-title .flow-dismiss:hover { opacity: 1; color: var(--red); }
+        .flow-card-body {
+            max-height: 120px; overflow: hidden; border-radius: 4px;
+        }
+        .flow-card-body img { width: 100%; border-radius: 4px; }
+        .flow-card-body pre {
+            font-size: 9px; line-height: 1.3; margin: 0;
+            color: var(--text-dim); white-space: pre-wrap;
+            max-height: 80px; overflow: hidden;
+            font-family: 'SF Mono', monospace;
+        }
+        .flow-card-meta { font-size: 9px; color: var(--text-dim); margin-top: 4px; }
+        /* Expanded flow dialog */
+        .flow-dialog-backdrop {
+            position: fixed; inset: 0; z-index: 400;
+            background: rgba(0,0,0,0.6); display: none;
+            align-items: center; justify-content: center;
+        }
+        .flow-dialog-backdrop.open { display: flex; }
+        .flow-dialog {
+            background: var(--panel-bg); border: 1px solid var(--accent);
+            border-radius: 12px; padding: 16px; max-width: 80vw; max-height: 80vh;
+            overflow: auto; box-shadow: 0 12px 40px rgba(0,0,0,0.5);
+        }
+        .flow-dialog-header {
+            display: flex; align-items: center; justify-content: space-between;
+            margin-bottom: 12px; font-weight: 600; color: var(--text);
+        }
+        .flow-dialog-close { cursor: pointer; font-size: 18px; opacity: 0.6; }
+        .flow-dialog-close:hover { opacity: 1; }
+        .flow-dialog-body img { max-width: 100%; border-radius: 6px; }
+        .flow-dialog-body pre { font-size: 12px; white-space: pre-wrap; max-height: 60vh; overflow: auto; }
+
         /* ── SETTINGS DROPDOWN ──────────────────── */
         .settings-dropdown {
             position: fixed; top: 36px; right: 8px; z-index: 300;
@@ -836,6 +894,18 @@
             <button class="expose-close" onclick="toggleExpose()">Close · Esc</button>
         </div>
         <div class="expose-grid" id="expose-grid"></div>
+    </div>
+
+    <!-- ═══ FLOW OVERLAYS ═══ -->
+    <div class="flow-overlay" id="flow-overlay"></div>
+    <div class="flow-dialog-backdrop" id="flow-dialog-backdrop" onclick="closeFlowDialog()">
+        <div class="flow-dialog" id="flow-dialog" onclick="event.stopPropagation()">
+            <div class="flow-dialog-header">
+                <span id="flow-dialog-title">Flow</span>
+                <span class="flow-dialog-close" onclick="closeFlowDialog()">✕</span>
+            </div>
+            <div class="flow-dialog-body" id="flow-dialog-body"></div>
+        </div>
     </div>
 
     <!-- ═══ DOCK ═══ -->
@@ -2023,6 +2093,94 @@
             }
             document.getElementById('sse-label').textContent = label;
         }
+
+        // ══════════════════════════════════════════
+        // FLOW OVERLAYS
+        // ══════════════════════════════════════════
+        let _knownFlows = {};
+        async function pollFlows() {
+            try {
+                const resp = await fetch('/api/flow/list');
+                if (!resp.ok) return;
+                const data = await resp.json();
+                const flows = data.flows || [];
+                const overlay = document.getElementById('flow-overlay');
+                const currentNames = new Set(flows.map(f => f.name));
+
+                // Remove dismissed
+                overlay.querySelectorAll('.flow-card').forEach(el => {
+                    if (!currentNames.has(el.dataset.flow)) el.remove();
+                });
+
+                flows.forEach(f => {
+                    if (f.category === 'tty') return;  // TTYs shown as session cards
+                    if (_knownFlows[f.name]) return;  // already showing
+                    _knownFlows[f.name] = f;
+
+                    const card = document.createElement('div');
+                    card.className = 'flow-card';
+                    card.dataset.flow = f.name;
+
+                    const catIcons = {image: '🖼', text: '📄', audio: '🔊', binary: '📦'};
+                    const icon = catIcons[f.category] || '📎';
+                    const renderUrl = '/api/flow/' + encodeURIComponent(f.name) + '/render';
+
+                    let bodyHtml = '';
+                    if (f.category === 'image') {
+                        bodyHtml = '<img src="' + renderUrl + '" loading="lazy">';
+                    } else if (f.category === 'text') {
+                        bodyHtml = '<pre>Loading...</pre>';
+                        fetch(renderUrl).then(r => r.text()).then(t => {
+                            const pre = card.querySelector('pre');
+                            if (pre) pre.textContent = t.substring(0, 500);
+                        });
+                    } else {
+                        bodyHtml = '<pre>' + esc(f.mime) + ' · ' + f.size + ' bytes</pre>';
+                    }
+
+                    card.innerHTML =
+                        '<div class="flow-card-title">' + icon + ' ' + esc(f.name) +
+                        '<span class="flow-dismiss" onclick="event.stopPropagation();dismissFlow(\'' + esc(f.name) + '\')">✕</span></div>' +
+                        '<div class="flow-card-body">' + bodyHtml + '</div>' +
+                        '<div class="flow-card-meta">' + f.mime + '</div>';
+
+                    card.onclick = () => openFlowDialog(f.name, renderUrl, f);
+                    overlay.appendChild(card);
+                });
+            } catch(e) {}
+        }
+
+        function dismissFlow(name) {
+            delete _knownFlows[name];
+            const card = document.querySelector('.flow-card[data-flow="' + name + '"]');
+            if (card) card.remove();
+            fetch('/api/flow/' + encodeURIComponent(name), {method: 'DELETE'});
+        }
+
+        function openFlowDialog(name, renderUrl, flowInfo) {
+            const backdrop = document.getElementById('flow-dialog-backdrop');
+            document.getElementById('flow-dialog-title').textContent = name;
+            const body = document.getElementById('flow-dialog-body');
+            const cat = flowInfo.category;
+            if (cat === 'image') {
+                body.innerHTML = '<img src="' + renderUrl + '">';
+            } else {
+                body.innerHTML = '<pre>Loading...</pre>';
+                fetch(renderUrl).then(r => r.text()).then(t => {
+                    body.innerHTML = '<pre>' + esc(t) + '</pre>';
+                });
+            }
+            backdrop.classList.add('open');
+        }
+
+        function closeFlowDialog() {
+            document.getElementById('flow-dialog-backdrop').classList.remove('open');
+        }
+
+        // Poll flows every 5 seconds
+        setInterval(pollFlows, 5000);
+        setTimeout(pollFlows, 2000);
+
         function connectSSE() {
             const src = new EventSource('/api/stream');
 

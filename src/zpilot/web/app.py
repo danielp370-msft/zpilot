@@ -169,6 +169,26 @@ async def api_events(count: int = 30):
     return [e.to_dict() for e in events]
 
 
+@app.get("/api/annotations/{scope}")
+async def api_get_annotations(scope: str):
+    """Get annotations for a scope (node, session, or 'fleet')."""
+    from ..annotations import get_all
+    return {"scope": scope, "annotations": get_all(scope)}
+
+
+@app.post("/api/annotations/{scope}")
+async def api_set_annotation(scope: str, request: Request):
+    """Set an annotation. Body: {key, value}."""
+    from ..annotations import set_annotation
+    body = await request.json()
+    key = body.get("key", "")
+    value = body.get("value", "")
+    if not key:
+        return {"error": "key required"}
+    set_annotation(scope, key, value)
+    return {"status": "set", "scope": scope, "key": key}
+
+
 @app.api_route(
     "/api/relay/{node_name}/{path:path}",
     methods=["GET", "POST", "PUT", "DELETE"],

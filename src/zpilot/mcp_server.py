@@ -424,6 +424,47 @@ def create_mcp_server(config: ZpilotConfig | None = None) -> Server:
                     "required": ["node", "name"],
                 },
             ),
+            Tool(
+                name="get_annotations",
+                description="Get annotations (notes, runbooks, metadata) for a node, session, or 'fleet'. Returns all if no key specified.",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "scope": {"type": "string", "description": "Node name, session name, or 'fleet'"},
+                        "key": {"type": "string", "description": "Specific annotation key (optional)"},
+                    },
+                },
+            ),
+            Tool(
+                name="set_annotation",
+                description="Set an annotation on a node, session, or fleet. Use for notes, runbooks, purpose, warnings.",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "scope": {"type": "string", "description": "Node name, session name, or 'fleet'"},
+                        "key": {"type": "string", "description": "Annotation key"},
+                        "value": {"type": "string", "description": "Annotation value (text, JSON, etc.)"},
+                    },
+                    "required": ["scope", "key", "value"],
+                },
+            ),
+            Tool(
+                name="delete_annotation",
+                description="Delete an annotation from a node, session, or fleet.",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "scope": {"type": "string", "description": "Node name, session name, or 'fleet'"},
+                        "key": {"type": "string", "description": "Annotation key to delete"},
+                    },
+                    "required": ["scope", "key"],
+                },
+            ),
+            Tool(
+                name="list_annotations",
+                description="List all annotation scopes (nodes, sessions, fleet) and their entry counts.",
+                inputSchema={"type": "object", "properties": {}},
+            ),
         ]
 
     # ── Tool implementations ────────────────────────────────────
@@ -857,6 +898,52 @@ async def _dispatch(
                 return f"Fetched {flow_name} from {node_name}: {len(data)} bytes → {dest}\nSHA256: {sha}"
         except Exception as e:
             return f"Error fetching from {node_name}: {e}"
+
+    elif name == "get_annotations":
+        from . import annotations
+        scope = args.get("scope", "fleet")
+        key = args.get("key")
+        if key:
+            val = annotations.get(scope, key)
+            return f"{scope}.{key} = {val}" if val is not None else f"{scope}.{key} not set"
+        data = annotations.get_all(scope)
+        if not data:
+            return f"No annotations for {scope}"
+        lines = [f"Annotations for {scope}:"]
+        for k, v in sorted(data.items()):
+            val_str = v if isinstance(v, str) else json.dumps(v)
+            lines.append(f"  {k}: {val_str}")
+        return "\n".join(lines)
+
+    elif name == "set_annotation":
+        from . import annotations
+        scope = args.get("scope", "fleet")
+        key = args.get("key", "")
+        value = args.get("value", "")
+        if not key:
+            return "Error: key is required"
+        annotations.set_annotation(scope, key, value)
+        return f"Set {scope}.{key} = {value}"
+
+    elif name == "delete_annotation":
+        from . import annotations
+        scope = args.get("scope", "fleet")
+        key = args.get("key", "")
+        if not key:
+            return "Error: key is required"
+        ok = annotations.delete(scope, key)
+        return f"Deleted {scope}.{key}" if ok else f"{scope}.{key} not found"
+
+    elif name == "list_annotations":
+        from . import annotations
+        scopes = annotations.list_scopes()
+        if not scopes:
+            return "No annotations stored"
+        lines = [f"Annotation scopes ({len(scopes)}):"]
+        for scope in sorted(scopes):
+            data = annotations.get_all(scope)
+            lines.append(f"  {scope}: {len(data)} entries")
+        return "\n".join(lines)
 
     else:
         return f"Unknown tool: {name}"

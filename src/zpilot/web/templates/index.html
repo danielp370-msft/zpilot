@@ -554,6 +554,13 @@
             background: var(--cyan, #66d9ef); color: #000; font-weight: bold;
             margin-right: 4px;
         }
+        .card-type-badge {
+            font-size: 9px; padding: 0px 4px; border-radius: 3px;
+            font-weight: bold; margin-right: 3px; opacity: 0.7;
+        }
+        .type-zellij { background: rgba(63,185,80,0.2); color: var(--green); }
+        .type-pty { background: rgba(210,153,34,0.2); color: var(--yellow); }
+        .type-remote { background: rgba(137,180,250,0.2); color: var(--blue, #58a6ff); }
 
         /* ── SETTINGS DROPDOWN ──────────────────── */
         .settings-dropdown {
@@ -967,6 +974,11 @@
 
         function dotClass(state) { return 'dot-' + (state || 'unknown'); }
         function badgeClass(state) { return 'badge-' + (state || 'unknown'); }
+        function typeBadge(s) {
+            const t = s.session_type || (s.pty_only ? 'pty' : (s.node && s.node !== 'local' ? 'remote' : 'zellij'));
+            const labels = { zellij: 'Ⓩ', pty: '◉', remote: '⬡' };
+            return `<span class="card-type-badge type-${t}" title="${t}">${labels[t] || ''}</span>`;
+        }
 
         // Heat → color: cold(grey) → cool(green) → warm(yellow) → hot(orange) → fire(red)
         function heatColor(heat) {
@@ -1041,6 +1053,7 @@
                     ? `<span class="pill-close" title="Dismiss">✕</span>`
                     : `<span class="pill-dot ${dotClass(s.state)}"${dotStyle}></span>`;
                 pill.innerHTML = dotOrClose +
+                    typeBadge(s) +
                     (s.node && s.node !== 'local' ? `<span class="pill-node">${esc(s.node)}:</span>` : '') +
                     `<span class="pill-name">${esc(s.node && s.node !== 'local' ? s.name.split(':').slice(1).join(':') : s.name)}</span>` +
                     (s.heat != null ? `<span class="pill-heat" title="heat: ${s.heat}">${heatBar(s.heat)}</span>` : '') +
@@ -1369,7 +1382,7 @@
                 card.innerHTML = `
                     <div class="card-top">
                         ${isRemote ? `<span class="card-node-tag">${esc(s.node)}</span>` : ''}
-                        <span class="card-name">${cardIcon} ${esc(displayName)}</span>
+                        ${typeBadge(s)}<span class="card-name">${cardIcon} ${esc(displayName)}</span>
                         <span class="card-badge ${badgeClass(s.state)}">${s.state || 'unknown'}</span>
                     </div>
                     <div class="card-status">${esc(cardStatus)}</div>
@@ -1472,7 +1485,7 @@
                 card.innerHTML =
                     '<div class="card-top">' +
                     (isRemote ? '<span class="card-node-tag">' + esc(s.node) + '</span>' : '') +
-                    '<span class="card-name">' + cardIcon + ' ' + esc(displayName) + '</span>' +
+                    typeBadge(s) + '<span class="card-name">' + cardIcon + ' ' + esc(displayName) + '</span>' +
                     '<span class="card-badge ' + badgeClass(s.state) + '">' + (s.state || '?') + '</span></div>' +
                     '<div class="card-status">' + esc(cardStatus) + '</div>' +
                     (showThumb ? '<div class="card-thumbnail-wrap"><img class="card-thumbnail" src="' + thumbUrl + '" loading="lazy" onerror="this.parentElement.style.display=\'none\'"></div>' : '') +

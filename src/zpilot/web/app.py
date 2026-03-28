@@ -109,6 +109,7 @@ async def _remote_fetcher_loop():
                         "card_icon": "⚠️",
                         "card_status": "Node offline",
                         "card_preview": "",
+                        "session_type": "remote",
                     })
             async with _remote_cache_lock:
                 _remote_cache = all_remote
@@ -1110,6 +1111,7 @@ def _discover_shell_wrapper_sessions(exclude: set[str] | None = None) -> list[di
             "last_lines": last_lines,
             "last_line": last_lines[-1] if last_lines else "",
             "pty_only": True,
+            "session_type": "pty",
             "card_mode": card.mode.value,
             "card_icon": card.icon,
             "card_status": card.status_line,
@@ -1147,7 +1149,9 @@ async def _get_session_data() -> list[dict]:
                 "card_mode": "shell",
                 "card_icon": "⏹",
                 "card_status": "Session exited",
+                "session_type": "zellij",
                 "card_preview": "",
+                "session_type": "zellij",
             })
             continue
         try:
@@ -1189,6 +1193,7 @@ async def _get_session_data() -> list[dict]:
                 "card_icon": card.icon,
                 "card_status": card.status_line,
                 "card_preview": card.preview,
+                "session_type": "zellij",
             })
         except Exception as e:
             result.append({
@@ -1245,6 +1250,7 @@ async def _fetch_remote_sessions_inner(node) -> list[dict]:
                 "card_icon": card.icon,
                 "card_status": card.status_line,
                 "card_preview": card.preview,
+                "session_type": "remote",
                 **({"pty_only": True} if s.get("pty_only") else {}),
             })
         return entries
@@ -1275,6 +1281,7 @@ async def _fetch_remote_sessions_inner(node) -> list[dict]:
                 "card_icon": "❓",
                 "card_status": "Remote session",
                 "card_preview": "",
+                "session_type": "remote",
             })
     except Exception:
         pass

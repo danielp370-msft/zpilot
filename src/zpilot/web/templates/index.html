@@ -2100,10 +2100,24 @@
         let _knownFlows = {};
         async function pollFlows() {
             try {
+                // Local flows
                 const resp = await fetch('/api/flow/list');
                 if (!resp.ok) return;
                 const data = await resp.json();
-                const flows = data.flows || [];
+                let flows = (data.flows || []).map(f => ({...f, node: 'local'}));
+
+                // Remote flows via relay
+                const remoteNodes = new Set(sessionsList.filter(s => s.node && s.node !== 'local').map(s => s.node));
+                for (const node of remoteNodes) {
+                    try {
+                        const rr = await fetch('/api/relay/' + encodeURIComponent(node) + '/api/flow/list');
+                        if (rr.ok) {
+                            const rd = await rr.json();
+                            (rd.flows || []).forEach(f => flows.push({...f, name: node + ':' + f.name, node: node}));
+                        }
+                    } catch(e) {}
+                }
+
                 const overlay = document.getElementById('flow-overlay');
                 const currentNames = new Set(flows.map(f => f.name));
 
@@ -2121,9 +2135,14 @@
                     card.className = 'flow-card';
                     card.dataset.flow = f.name;
 
+                    const isRemote = f.node && f.node !== 'local';
+                    const rawName = isRemote ? f.name.split(':').slice(1).join(':') : f.name;
                     const catIcons = {image: '🖼', text: '📄', audio: '🔊', binary: '📦'};
                     const icon = catIcons[f.category] || '📎';
-                    const renderUrl = '/api/flow/' + encodeURIComponent(f.name) + '/render';
+                    const nodeTag = isRemote ? '<span style="font-size:8px;color:var(--cyan)">' + esc(f.node) + ':</span> ' : '';
+                    const renderUrl = isRemote
+                        ? '/api/relay/' + encodeURIComponent(f.node) + '/api/flow/' + encodeURIComponent(rawName) + '/render'
+                        : '/api/flow/' + encodeURIComponent(f.name) + '/render';
 
                     let bodyHtml = '';
                     if (f.category === 'image') {
@@ -2139,7 +2158,7 @@
                     }
 
                     card.innerHTML =
-                        '<div class="flow-card-title">' + icon + ' ' + esc(f.name) +
+                        '<div class="flow-card-title">' + icon + ' ' + nodeTag + esc(rawName) +
                         '<span class="flow-dismiss" onclick="event.stopPropagation();dismissFlow(\'' + esc(f.name) + '\')">✕</span></div>' +
                         '<div class="flow-card-body">' + bodyHtml + '</div>' +
                         '<div class="flow-card-meta">' + f.mime + '</div>';

@@ -359,7 +359,14 @@ def create_http_app(config: ZpilotConfig | None = None) -> FastAPI:
 
     @app.get("/health")
     async def health():
-        return {"status": "ok", "node": "zpilot"}
+        from . import get_version_info
+        info = get_version_info()
+        return {
+            "status": "ok",
+            "node": "zpilot",
+            "version": info["version"],
+            "git_sha": info["git_sha"],
+        }
 
     # ── MCP endpoint ─────────────────────────────────────────────
     # MCP >= 1.26 changed handle_request to ASGI (scope, receive, send).

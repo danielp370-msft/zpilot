@@ -195,6 +195,8 @@ def status() -> None:
         }
 
         # Detailed per-session output, grouped by node
+        from . import get_version_info
+        local_ver = get_version_info()
         detector = PaneDetector(config)
         for nh in fleet.nodes:
             icon = "●" if nh.state.value == "online" else "○"
@@ -203,7 +205,22 @@ def status() -> None:
                 click.echo(f"\n{icon} {label}: {nh.state.value} ({nh.error})")
                 continue
             count = nh.total_sessions
-            click.echo(f"\n{icon} {label}: {count} session(s)")
+            # Get remote version
+            ver_str = ""
+            if nh.name == "local":
+                ver_str = f"  [v{local_ver['version']} · {local_ver['git_sha']}]"
+            else:
+                try:
+                    node = reg.get(nh.name)
+                    health = await node.transport.api_get("/health", timeout=5.0)
+                    rver = health.get("version", "?")
+                    rsha = health.get("git_sha", "?")
+                    ver_str = f"  [v{rver} · {rsha}]"
+                    if rver != local_ver["version"]:
+                        ver_str += " ⚠️ outdated"
+                except Exception:
+                    ver_str = "  [version unknown]"
+            click.echo(f"\n{icon} {label}: {count} session(s){ver_str}")
 
             if nh.name == "local":
                 # Show detailed local sessions with state detection
@@ -1241,6 +1258,122 @@ def tunnel_status() -> None:
             click.echo()
         except RuntimeError as e:
             click.echo(f"  ⚠️  {t.tunnel_id}: {e}")
+
+
+@main.command()
+@click.argument("node", required=False, default=None)
+@click.option("--all-nodes", "upgrade_all", is_flag=True, help="Upgrade all nodes in the fleet")
+def upgrade(node: str | None, upgrade_all: bool) -> None:
+    """Upgrade zpilot on local or remote nodes.
+
+    Pulls latest code from git, installs, and restarts services.
+    Use --all-nodes for rolling fleet upgrade with health checks.
+
+    Examples:
+      zpilot upgrade              # upgrade local
+      zpilot upgrade dandroid1    # upgrade specific node
+      zpilot upgrade --all-nodes  # upgrade entire fleet
+    """
+    import subprocess
+    from . import get_version_info
+
+    before = get_version_info()
+
+    if not node and not upgrade_all:
+        # Local upgrade
+        click.echo(f"⬆️  Upgrading local node (currently v{before['version']} · {before['git_sha']})...")
+        try:
+            result = subprocess.run(
+                ["git", "-C", os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
+                 "pull", "--ff-only"],
+                capture_output=True, text=True, timeout=30,
+            )
+            if result.returncode != 0:
+                click.echo(f"❌ git pull failed: {result.stderr.strip()}", err=True)
+                return
+            click.echo(f"   git: {result.stdout.strip()}")
+        except Exception as e:
+            click.echo(f"❌ git pull error: {e}", err=True)
+            return
+
+        try:
+            result = subprocess.run(
+                [sys.executable, "-m", "pip", "install", "-e",
+                 os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
+                 "-q"],
+                capture_output=True, text=True, timeout=60,
+            )
+            if result.returncode != 0:
+                click.echo(f"❌ pip install failed: {result.stderr.strip()[:200]}", err=True)
+                return
+            click.echo("   pip: installed")
+        except Exception as e:
+            click.echo(f"❌ pip install error: {e}", err=True)
+            return
+
+        after = get_version_info()
+        click.echo(f"✅ Upgraded: v{before['version']} · {before['git_sha']} → v{after['version']} · {after['git_sha']}")
+        click.echo("   Restart services with: zpilot down && zpilot up")
+        return
+
+    # Remote or fleet upgrade
+    async def _upgrade_remote(target: str) -> bool:
+        from .nodes import NodeRegistry, load_nodes
+        reg = NodeRegistry(load_nodes())
+        try:
+            n = reg.get(target)
+        except KeyError:
+            click.echo(f"❌ Unknown node: {target}")
+            return False
+
+        click.echo(f"\n⬆️  Upgrading {target}...")
+
+        # Check current version
+        try:
+            health = await n.transport.api_get("/health", timeout=5.0)
+            rver = health.get("version", "?")
+            rsha = health.get("git_sha", "?")
+            click.echo(f"   Current: v{rver} · {rsha}")
+        except Exception:
+            click.echo(f"   Current: unknown (node may be offline)")
+            return False
+
+        # Run upgrade command
+        try:
+            result = await n.transport.exec(
+                "cd ~/zpilot && git pull --ff-only && pip install -e . -q 2>&1 | tail -3",
+                timeout=120,
+            )
+            if result.ok:
+                click.echo(f"   Upgrade: {result.stdout.strip()[:100]}")
+            else:
+                click.echo(f"   ❌ Upgrade failed: {result.stderr.strip()[:100]}")
+                return False
+        except Exception as e:
+            click.echo(f"   ❌ Error: {e}")
+            return False
+
+        # Verify new version
+        try:
+            health = await n.transport.api_get("/health", timeout=5.0)
+            click.echo(f"   ✅ Now: v{health.get('version', '?')} · {health.get('git_sha', '?')}")
+        except Exception:
+            click.echo("   ⚠️  Could not verify (may need service restart)")
+        return True
+
+    if upgrade_all:
+        from .nodes import load_nodes
+        nodes = [n.name for n in load_nodes() if not n.is_local]
+        # Upgrade local first
+        click.echo("Rolling fleet upgrade...")
+        ctx = click.get_current_context()
+        ctx.invoke(upgrade, node=None, upgrade_all=False)
+        # Then remotes
+        for name in nodes:
+            asyncio.run(_upgrade_remote(name))
+        click.echo("\n🎉 Fleet upgrade complete")
+    elif node:
+        asyncio.run(_upgrade_remote(node))
 
 
 if __name__ == "__main__":
